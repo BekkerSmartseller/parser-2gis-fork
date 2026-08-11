@@ -104,6 +104,110 @@
 
 Автор этих модификаций: **BekkerSmartseller** — форк/дальнейшая разработка на базе `Eroloft/parser-2gis-new`.
 
+
+
+## 🌐 HTTP API (веб-дашборд)
+
+Сервер (порт 8666) предоставляет REST API для запуска и мониторинга парсинга, в т.ч. нескольких задач параллельно.
+
+### Запуск задачи
+
+```http
+POST /api/start
+Content-Type: application/json
+```
+
+Тело запроса:
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `urls` | string[] | Список URL поисковой выдачи 2GIS (обязательно) |
+| `max_records` | int | Лимит записей с одного URL (по умолчанию из конфига, обычно 100) |
+| `max_concurrent` | int | Сколько Chrome-задач можно выполнять одновременно (по умолчанию 3). Задачи сверх лимита **встают в очередь** |
+| `headless` | bool | Скрытый браузер (по умолчанию true) |
+| `clean` | bool | «Чистый вид» CSV (только основные колонки) |
+| `filters` | object | Фильтры результатов (см. ниже) |
+| `advanced` | object | Расширенные настройки (см. ниже) |
+
+Ответ: `{"ok": true, "job_id": "ab12cd34ef56"}`.
+
+### Фильтры (`filters`)
+
+```json
+{
+  "dedup_franchises": true,      // один филиал на организацию
+  "dedup_across_niches": true,   // одно заведение один раз между нишами
+  "require_phone": false,        // только с телефоном
+  "require_whatsapp": false,
+  "require_social": false,
+  "require_email": false,
+  "require_website": false,
+  "min_rating": 4.0,             // рейтинг не ниже
+  "min_reviews": 10              // отзывов не меньше
+}
+```
+
+### Расширенные настройки (`advanced`)
+
+```json
+{
+  "disable_images": true,        // быстрее
+  "start_maximized": false,
+  "skip_404_response": true,
+  "delay_between_clicks": 0,     // мс
+  "columns_per_entity": 3,
+  "memory_limit": 2048,          // МБ для V8
+  "add_rubrics": false,
+  "add_comments": false,
+  "remove_empty_columns": true,
+  "remove_duplicates": true,
+  "encoding": "utf8"
+}
+```
+
+### Мониторинг и результаты
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/api/jobs` | Все задачи: `[{id, status, count}]`. Статусы: `queued`, `running`, `done`, `stopped`, `error` |
+| GET | `/api/status?job_id=ID&cursor=0` | Прогресс задачи: `{status, running, count, logs[], cursor}`. Без `job_id` — последняя задача |
+| GET | `/api/results?job_id=ID` | Массив записей задачи `{records: [...]}` |
+| GET | `/api/download?format=csv&job_id=ID` | Скачать результат: `csv`, `xlsx`, `json`, `html` |
+| POST | `/api/stop` | Остановить задачу (тело `{"job_id": ID}`) |
+| POST | `/api/clear` | Очистить результат (тело `{"job_id": ID}`) |
+| GET | `/api/generator` | Данные для конструктора ссылок: `{countries, cities, rubrics}` |
+| GET | `/api/history` | Сохранённые парсинги: `{items: [{id, created_at, urls, count}]}` |
+| GET | `/api/history/HID/results` | Записи из истории |
+| GET | `/api/history/HID/download?format=csv` | Скачать из истории |
+| POST | `/api/history/merge` | Объединить записи истории (тело `{"ids": [HID,...]}`) |
+| DELETE | `/api/history/HID` | Удалить запись истории |
+
+### Пример (curl)
+
+```bash
+# Запуск параллельного парсинга (лимит 3 Chrome; 5-я задача встанет в очередь)
+curl -X POST http://127.0.0.1:8666/api/start -H 'Content-Type: application/json' -d '{
+  "urls": ["https://2gis.ru/kazan/search/Фитнес-клубы/rubricId/268/filters/sort=name"],
+  "max_records": 100,
+  "max_concurrent": 3
+}'
+# → {"ok": true, "job_id": "a1b2c3d4e5f6"}
+
+# Статус
+curl "http://127.0.0.1:8666/api/status?job_id=a1b2c3d4e5f6"
+
+# Результаты
+curl "http://127.0.0.1:8666/api/results?job_id=a1b2c3d4e5f6"
+
+# Скачать CSV
+curl "http://127.0.0.1:8666/api/download?format=csv&job_id=a1b2c3d4e5f6" -o result.csv
+```
+
+### Замечания
+
+- `max_records` — это лимит числа *кликов* по позициям выдачи. Если 2GIS не вернул JSON на какую-то позицию (анти-бот/сеть), она пропускается — итог может быть чуть меньше лимита. При необходимости задавайте `max_records` с запасом или увеличивайте ретраи.
+- Каждая задача использует собственный Chrome; одновременно открыто не более `max_concurrent` браузеров.
+
 ## 📜 Лицензия и авторство
 
 - Оригинальный проект: **parser-2gis** — © **Andy Trofimov** (interlark@gmail.com),
