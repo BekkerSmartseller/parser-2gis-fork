@@ -105,7 +105,8 @@ if __name__ == '__main__':
             'psutil>=5.4.8',
             'requests>=2.13.0',
             'xlsxwriter>=3.0.5',
-            'Flask>=2.2',
+            'litestar>=2,<3',
+            'uvicorn>=0.30',
         ],
         extras_require={
             'dev': [
