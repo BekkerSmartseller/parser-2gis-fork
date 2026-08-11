@@ -41,9 +41,15 @@ class ChromeBrowser():
             f'--js-flags=--expose-gc --max-old-space-size={chrome_options.memory_limit}',
         ]
 
+        self._forwarder = None
         if chrome_options.proxy:
             logger.debug('Chrome использует прокси: %s', chrome_options.proxy)
-            self._chrome_cmd.append('--proxy-server=%s' % chrome_options.proxy)
+            proxy_arg = chrome_options.proxy
+            if '@' in chrome_options.proxy:
+                from .proxy_forwarder import ProxyForwarder
+                self._forwarder = ProxyForwarder(chrome_options.proxy)
+                proxy_arg = self._forwarder.start()
+            self._chrome_cmd.append('--proxy-server=%s' % proxy_arg)
 
         if chrome_options.start_maximized:
             self._chrome_cmd.append('--start-maximized')
@@ -95,6 +101,8 @@ class ChromeBrowser():
         # Close the browser
         self._proc.terminate()
         self._proc.wait()
+        if getattr(self, '_forwarder', None):
+            self._forwarder.close()
 
         # Delete temporary profile
         self._delete_profile()
