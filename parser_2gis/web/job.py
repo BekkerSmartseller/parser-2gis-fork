@@ -18,11 +18,6 @@ from .history import History
 # Keep at most this many log lines in memory for the live progress panel.
 _MAX_LOG_LINES = 5000
 
-# Thread-safe round-robin counter for proxy rotation across concurrent jobs.
-_proxy_index = -1
-_proxy_index_lock = threading.Lock()
-
-
 class CollectorWriter(FileWriter):
     """In-memory writer: collects raw catalog documents (no file output).
 
