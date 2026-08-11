@@ -117,6 +117,7 @@ def _static_dir() -> Path:
 def create_app():
     """Create the Litestar app for the dashboard."""
     from litestar import Litestar, delete, get, post
+    from litestar.openapi import ResponseSpec
     from litestar.openapi.spec import Example
     from litestar.params import Body
     from litestar.response import File, Response
@@ -167,11 +168,11 @@ def create_app():
         job_id = data.get('job_id') or None
         return {'ok': jobs.clear(job_id)}
 
-    @get('/api/jobs', sync_to_thread=True, summary='Список задач', description='id, status, count')
+    @get('/api/jobs', sync_to_thread=True, summary='Список задач', description='id, status, count', responses={200: ResponseSpec(None, description='OK', media_type='application/json', examples=[Example(value=[{'id': 'ab12cd34ef56', 'status': 'done', 'count': 97}])])})
     def api_jobs() -> Any:
         return {'jobs': jobs.list_jobs()}
 
-    @get('/api/status', sync_to_thread=True, summary='Статус задачи', description='job_id, cursor. Без job_id - последняя')
+    @get('/api/status', sync_to_thread=True, summary='Статус задачи', description='job_id, cursor. Без job_id - последняя', responses={200: ResponseSpec(None, description='OK', media_type='application/json', examples=[Example(value={'status': 'done', 'running': False, 'count': 97, 'cursor': 0})])})
     def api_status(cursor: int = 0, job_id: str | None = None) -> Any:
         job = jobs.get(job_id)
         if not job:
@@ -187,7 +188,7 @@ def create_app():
             'cursor': cursor + len(logs),
         }
 
-    @get('/api/results', sync_to_thread=True, summary='Результаты задачи', description='job_id')
+    @get('/api/results', sync_to_thread=True, summary='Результаты задачи', description='job_id', responses={200: ResponseSpec(None, description='OK', media_type='application/json', examples=[Example(value={'records': [{'name': 'Example Fitness', 'address': 'г. Казань'}]})])})
     def api_results(job_id: str | None = None) -> Any:
         job = jobs.get(job_id)
         if not job:
