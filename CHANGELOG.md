@@ -8,6 +8,8 @@
 - setup.py: зависимость Flask>=2.2 заменена на litestar>=2,<3 + uvicorn>=0.30.
 - Статика раздаётся через StaticFilesConfig (Litestar), главная страница отдаётся с text/html.
 - index.html не менялся — клиент полностью совместим.
+- HTTP-клиент `requests` заменён на `httpx` (запросы к Chrome DevTools: PUT /json/new, GET /json, PUT /json/close).
+
 
 
 ## [2.0.0] - 2026-06-29

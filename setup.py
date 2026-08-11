@@ -103,7 +103,7 @@ if __name__ == '__main__':
             'pychrome>=0.2.4',
             'pydantic>=2.0,<3.0',
             'psutil>=5.4.8',
-            'requests>=2.13.0',
+            'httpx>=0.27',
             'xlsxwriter>=3.0.5',
             'litestar>=2,<3',
             'uvicorn>=0.30',
