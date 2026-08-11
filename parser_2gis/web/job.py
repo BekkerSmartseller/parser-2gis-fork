@@ -230,8 +230,8 @@ class JobManager:
     def get(self, job_id: Optional[str]) -> Optional[ParseJob]:
         with self._lock:
             if job_id is None:
-                # Fall back to the most recently created job.
-                return next(iter(self._jobs.values()), None)
+                jobs = list(self._jobs.values())
+                return jobs[-1] if jobs else None
             return self._jobs.get(job_id)
 
     def stop(self, job_id: Optional[str] = None) -> bool:
