@@ -337,7 +337,7 @@
       <button class="btn-run" id="run" data-i18n="run">Бастау</button>
       <button class="btn-stop" id="stop" style="display:none" data-i18n="stop">Тоқтату</button>
     </div>
-  <div class="group" style="margin-top:4px"><label class='h' for='maxconc'>Параллельных задач (max concurrent)</label><input id='maxconc' type='number' min='1' value='3'></div>
+  
 </aside>
 
   <main>
@@ -471,8 +471,7 @@
     if(GEN&&GEN.loaded){renderGenCities();renderGenRubrics();renderGenQueryList();
       $('genRubBtn').textContent=GEN.rubCode?GEN.rubLabel:t('no_rubric');}
     setStatus(lastStatus); loadHistory(); renderGrid();
-    try{try{localStorage.setItem('maxconc',($('maxconc').value||'3'))}catch(e){}
-localStorage.setItem('lang',LANG);}catch(_){}
+    try{localStorage.setItem('lang',LANG);}catch(_){}
   }
   $('langbtns').addEventListener('click',function(e){var b=e.target.closest('button'); if(b)applyLang(b.getAttribute('data-lang'));});
 
@@ -515,7 +514,6 @@ localStorage.setItem('lang',LANG);}catch(_){}
     return {
       urls: $('urls').value.split('\n'),
       max_records: parseInt($('maxrec').value||'50',10),
-      max_concurrent: parseInt($('maxconc').value||'3',10),
       headless: $('headless').checked,
       clean: $('clean').checked,
       filters: {
@@ -921,5 +919,4 @@ localStorage.setItem('lang',LANG);}catch(_){}
 })();
 </script>
 </body>
-</html>try{var _m=localStorage.getItem('maxconc');if(_m!==null&&$('maxconc'))$('maxconc').value=_m;}catch(e){}
-
+</html>
