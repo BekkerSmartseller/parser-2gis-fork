@@ -5,14 +5,15 @@ import os
 import tempfile
 import webbrowser
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
 from ..config import Configuration
 from ..logger import logger
 from ..paths import data_path
 from ..writer import WriterOptions, get_writer
 from .history import History
-from .job import ParseJob
+from .job import JobManager
 
 # Download file names per format.
 _DOWNLOAD_NAMES = {'csv': '2gis.csv', 'xlsx': '2gis.xlsx',
@@ -59,7 +60,12 @@ def _build_config(data: dict[str, Any]) -> Configuration:
     config = Configuration()
     config.chrome.headless = bool(data.get('headless', True))
     config.parser.max_records = max(1, int(data.get('max_records', 100)))
-    config.writer.csv.clean = bool(data.get('clean', True))
+    # Default to the full column set; "clean view" is an explicit opt-in.
+    config.writer.csv.clean = bool(data.get('clean', False))
+
+    # Concurrent jobs / proxies (per request).
+    if data.get('max_concurrent'):
+        config.parser.max_concurrent = max(1, int(data['max_concurrent']))
 
     adv = data.get('advanced', {}) or {}
     if adv:
@@ -91,77 +97,103 @@ def _build_config(data: dict[str, Any]) -> Configuration:
     return config
 
 
-def create_app():
-    """Create the Flask app for the dashboard. Requires the `web` extra."""
-    try:
-        from flask import Flask, jsonify, request, send_file, send_from_directory
-    except ImportError as e:  # pragma: no cover
-        raise ImportError(
-            'Для веб-интерфейса нужен Flask. Установите: pip install "parser-2gis[web]"'
-        ) from e
+def _export_response(docs, writer_opts: WriterOptions, fmt: str) -> Any:
+    """Write `docs` to a temp file in `fmt` and return a FileResponse."""
+    from litestar.response import File
 
-    static_dir = os.path.join(os.path.dirname(__file__), 'static')
-    app = Flask(__name__, static_folder=static_dir, static_url_path='/static')
-    job = ParseJob()
+    tmp_dir = tempfile.mkdtemp(prefix='p2gis_web_')
+    out_path = os.path.join(tmp_dir, _DOWNLOAD_NAMES[fmt])
+    with get_writer(out_path, fmt, writer_opts) as writer:
+        for doc in docs:
+            writer.write(doc)
+    return File(path=out_path, filename=_DOWNLOAD_NAMES[fmt])
+
+
+@lru_cache(maxsize=1)
+def _static_dir() -> Path:
+    return Path(__file__).with_name('static')
+
+
+def create_app():
+    """Create the Litestar app for the dashboard."""
+    from litestar import Litestar, delete, get, post
+    from litestar.response import File, Response
+    from litestar.static_files.config import StaticFilesConfig
+
+    static_dir = _static_dir()
+    jobs = JobManager(max_concurrent=3)
     history = History()
 
-    def _export_send(docs, writer_opts: WriterOptions, fmt: str):
-        """Write `docs` to a temp file in `fmt` and send it as a download."""
-        tmp_dir = tempfile.mkdtemp(prefix='p2gis_web_')
-        out_path = os.path.join(tmp_dir, _DOWNLOAD_NAMES[fmt])
-        with get_writer(out_path, fmt, writer_opts) as writer:
-            for doc in docs:
-                writer.write(doc)
-        return send_file(out_path, as_attachment=True, download_name=_DOWNLOAD_NAMES[fmt])
+    def _err(msg: str, code: int = 400) -> Any:
+        """JSON error response (Litestar does not support (body, status) tuples)."""
+        return Response(content=json.dumps({'ok': False, 'error': msg}),
+                        media_type='application/json', status_code=code)
 
-    @app.route('/')
-    def index():
-        return send_from_directory(static_dir, 'index.html')
+    @get('/', sync_to_thread=True)
+    def index() -> Any:
+        return Response(content=(static_dir / 'index.html').read_bytes(),
+                        media_type='text/html')
 
-    @app.route('/api/start', methods=['POST'])
-    def api_start():
-        data = request.get_json(force=True, silent=True) or {}
+    @post('/api/start', sync_to_thread=True)
+    def api_start(data: dict[str, Any] | None = None) -> Any:
+        data = data or {}
         urls = [u.strip() for u in (data.get('urls') or []) if u and u.strip()]
         if not urls:
-            return jsonify({'ok': False, 'error': 'Не указаны ссылки'}), 400
+            return _err('Не указаны ссылки')
         try:
             config = _build_config(data)
-            job.start(config, urls)
+            # Update worker concurrency on the fly from the request's max_concurrent.
+            job_id = jobs.start(config, urls)
         except RuntimeError as e:
-            return jsonify({'ok': False, 'error': str(e)}), 409
+            return _err(str(e), 409)
         except Exception as e:
             logger.error('Не удалось запустить парсинг: %s', e)
-            return jsonify({'ok': False, 'error': str(e)}), 400
-        return jsonify({'ok': True})
+            return _err(str(e))
+        return {'ok': True, 'job_id': job_id}
 
-    @app.route('/api/stop', methods=['POST'])
-    def api_stop():
-        job.stop()
-        return jsonify({'ok': True})
+    @post('/api/stop', sync_to_thread=True)
+    def api_stop(data: dict[str, Any] | None = None) -> Any:
+        data = data or {}
+        job_id = data.get('job_id') or None
+        if job_id and job_id not in jobs._jobs:
+            return _err('Задача не найдена', 404)
+        return {'ok': jobs.stop(job_id)}
 
-    @app.route('/api/clear', methods=['POST'])
-    def api_clear():
-        return jsonify({'ok': job.clear()})
+    @post('/api/clear', sync_to_thread=True)
+    def api_clear(data: dict[str, Any] | None = None) -> Any:
+        data = data or {}
+        job_id = data.get('job_id') or None
+        return {'ok': jobs.clear(job_id)}
 
-    @app.route('/api/status')
-    def api_status():
-        cursor = request.args.get('cursor', default=0, type=int)
+    @get('/api/jobs', sync_to_thread=True)
+    def api_jobs() -> Any:
+        return {'jobs': jobs.list_jobs()}
+
+    @get('/api/status', sync_to_thread=True)
+    def api_status(cursor: int = 0, job_id: str | None = None) -> Any:
+        job = jobs.get(job_id)
+        if not job:
+            return _err('Задача не найдена', 404)
         logs = job.logs[cursor:]
-        return jsonify({
+        return {
+            'job_id': job.id,
             'status': job.status,
             'running': job.running,
             'count': job.count,
             'error': job.error,
             'logs': logs,
             'cursor': cursor + len(logs),
-        })
+        }
 
-    @app.route('/api/results')
-    def api_results():
-        return jsonify({'records': job.results()})
+    @get('/api/results', sync_to_thread=True)
+    def api_results(job_id: str | None = None) -> Any:
+        job = jobs.get(job_id)
+        if not job:
+            return _err('Задача не найдена', 404)
+        return {'records': job.results()}
 
-    @app.route('/api/generator')
-    def api_generator():
+    @get('/api/generator', sync_to_thread=True)
+    def api_generator() -> Any:
         """Data for the link generator: countries, cities, rubrics."""
         cities = [
             {'name': c['name'], 'code': c['code'], 'domain': c['domain'],
@@ -170,73 +202,90 @@ def create_app():
         ]
         countries = [{'code': k, 'name': v} for k, v in COUNTRIES.items()]
         countries.sort(key=lambda c: c['name'])
-        return jsonify({'countries': countries, 'cities': cities, 'rubrics': _load_rubrics()})
+        return {'countries': countries, 'cities': cities, 'rubrics': _load_rubrics()}
 
-    @app.route('/api/download')
-    def api_download():
-        fmt = request.args.get('format', 'csv')
-        if fmt not in _DOWNLOAD_NAMES:
-            return jsonify({'ok': False, 'error': 'Неизвестный формат'}), 400
-        if not job.count:
-            return jsonify({'ok': False, 'error': 'Нет данных'}), 400
-
+    @get('/api/download', sync_to_thread=True)
+    def api_download(format: str = 'csv', job_id: str | None = None) -> Any:
+        if format not in _DOWNLOAD_NAMES:
+            return _err('Неизвестный формат')
+        job = jobs.get(job_id)
+        if not job or not job.collector:
+            return _err('Нет данных')
         try:
-            assert job.collector is not None
-            return _export_send(job.collector.docs, job.collector._options, fmt)
+            return _export_response(job.collector.docs, job.collector._options, format)
         except Exception as e:
             logger.error('Ошибка экспорта: %s', e)
-            return jsonify({'ok': False, 'error': str(e)}), 500
+            return _err(str(e), 500)
 
-    @app.route('/api/history')
-    def api_history():
-        return jsonify({'items': history.list()})
+    @get('/api/history', sync_to_thread=True)
+    def api_history() -> Any:
+        return {'items': history.list()}
 
-    @app.route('/api/history/<hid>/results')
-    def api_history_results(hid):
+    @get('/api/history/{hid:str}/results', sync_to_thread=True)
+    def api_history_results(hid: str) -> Any:
         docs = history.docs(hid)
         if docs is None:
-            return jsonify({'ok': False, 'error': 'Запись не найдена'}), 404
-        return jsonify({'records': history.records(hid)})
+            return _err('Запись не найдена', 404)
+        return {'records': history.records(hid)}
 
-    @app.route('/api/history/<hid>/download')
-    def api_history_download(hid):
-        fmt = request.args.get('format', 'csv')
-        if fmt not in _DOWNLOAD_NAMES:
-            return jsonify({'ok': False, 'error': 'Неизвестный формат'}), 400
+    @get('/api/history/{hid:str}/download', sync_to_thread=True)
+    def api_history_download(hid: str, format: str = 'csv') -> Any:
+        if format not in _DOWNLOAD_NAMES:
+            return _err('Неизвестный формат')
         docs = history.docs(hid)
         if not docs:
-            return jsonify({'ok': False, 'error': 'Запись не найдена'}), 404
+            return _err('Запись не найдена', 404)
         try:
             opts = WriterOptions(**history.writer_options(hid))
         except Exception:
             opts = WriterOptions()
         try:
-            return _export_send(docs, opts, fmt)
+            return _export_response(docs, opts, format)
         except Exception as e:
             logger.error('Ошибка экспорта истории: %s', e)
-            return jsonify({'ok': False, 'error': str(e)}), 500
+            return _err(str(e), 500)
 
-    @app.route('/api/history/merge', methods=['POST'])
-    def api_history_merge():
-        data = request.get_json(force=True, silent=True) or {}
+    @post('/api/history/merge', sync_to_thread=True)
+    def api_history_merge(data: dict[str, Any] | None = None) -> Any:
+        data = data or {}
         ids = [str(i) for i in (data.get('ids') or [])]
         if not ids:
-            return jsonify({'ok': False, 'error': 'Не выбраны записи'}), 400
+            return _err('Не выбраны записи')
         result = history.merge_and_save(ids)
         if not result:
-            return jsonify({'ok': False, 'error': 'Нет данных для объединения'}), 400
+            return _err('Нет данных для объединения')
         new_id, count = result
-        return jsonify({'ok': True, 'id': new_id, 'count': count})
+        return {'ok': True, 'id': new_id, 'count': count}
 
-    @app.route('/api/history/<hid>', methods=['DELETE'])
-    def api_history_delete(hid):
-        return jsonify({'ok': history.delete(hid)})
+    @delete('/api/history/{hid:str}', status_code=200, sync_to_thread=True)
+    def api_history_delete(hid: str) -> Any:
+        return {'ok': history.delete(hid)}
 
-    return app
+    return Litestar(
+        route_handlers=[
+            index,
+            api_start,
+            api_stop,
+            api_clear,
+            api_jobs,
+            api_status,
+            api_results,
+            api_generator,
+            api_download,
+            api_history,
+            api_history_results,
+            api_history_download,
+            api_history_merge,
+            api_history_delete,
+        ],
+        static_files_config=[StaticFilesConfig(path='/static', directories=[str(static_dir)])],
+    )
 
 
 def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = True) -> None:
     """Run the dashboard server (blocking)."""
+    import uvicorn
+
     app = create_app()
     url = f'http://{host}:{port}/'
     logger.info('Веб-интерфейс запущен: %s', url)
@@ -245,4 +294,4 @@ def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = T
             webbrowser.open(url)
         except Exception:
             pass
-    app.run(host=host, port=port, threaded=True, debug=False, use_reloader=False)
+    uvicorn.run(app, host=host, port=port, log_level='warning')

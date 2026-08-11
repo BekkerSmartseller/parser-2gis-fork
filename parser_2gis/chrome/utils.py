@@ -68,6 +68,9 @@ def locate_chrome_path() -> str | None:
                 return binary_path
 
     else:
+        import glob
+        import subprocess
+
         app_dirs = ['/usr/bin', '/usr/sbin', '/usr/local/bin', '/usr/local/sbin', '/sbin', '/opt/google/chrome']
         browser_executables = ['google-chrome', 'chrome', 'chrome-browser', 'google-chrome-stable']
         for d in app_dirs:
@@ -77,8 +80,6 @@ def locate_chrome_path() -> str | None:
                     return binary_path
 
         # We also could use 'which' to locate Chrome executable
-        import subprocess
-
         for f in browser_executables:
             try:
                 ret_output = subprocess.check_output(['which', f])
@@ -88,6 +89,22 @@ def locate_chrome_path() -> str | None:
 
             except subprocess.CalledProcessError:
                 pass
+
+        # Playwright-managed Chromium (chrome-linux64/chrome)
+        for p in glob.glob(os.path.expanduser('~/.cache/ms-playwright/chromium-*/chrome-linux64/chrome')) + \
+                 glob.glob(os.path.expanduser('~/.cache/ms-playwright/chromium-*/chrome-linux/*/chrome')):
+            if os.path.isfile(p):
+                return p
+
+        # Playwright headless shell
+        for p in glob.glob(os.path.expanduser('~/.cache/ms-playwright/chromium_headless_shell-*/chrome-linux64/headless_shell')):
+            if os.path.isfile(p):
+                return p
+
+        # Brave browser (Chromium-based)
+        for p in ('/opt/brave.com/brave/brave', '/usr/bin/brave-browser'):
+            if os.path.isfile(p):
+                return p
 
     return None
 

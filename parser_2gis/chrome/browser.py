@@ -41,6 +41,7 @@ class ChromeBrowser():
             f'--js-flags=--expose-gc --max-old-space-size={chrome_options.memory_limit}',
         ]
 
+
         if chrome_options.start_maximized:
             self._chrome_cmd.append('--start-maximized')
 

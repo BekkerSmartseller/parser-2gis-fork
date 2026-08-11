@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from ...common import report_from_validation_error
 from ...logger import logger
 from ..models import CatalogItem
+from ..record import _average_check, rubric_section_name, rubric_sections
 from .file_writer import FileWriter
 
 
@@ -38,18 +39,38 @@ class CSVWriter(FileWriter):
 
     @property
     def _data_mapping(self) -> dict[str, Any]:
+        # Логический порядок колонок. Контактные *_1.._N и *_comment добавляются
+        # ниже и вставляются рядом со своими базовыми колонками через пересортировку.
         data_mapping = {
-            'name': 'Наименование', 'description': 'Описание', 'rubrics': 'Рубрики',
+            'name': 'Наименование',
+            'description': 'Описание',
+            'firm_id': 'ID в 2GIS', 'org_id': 'ID организации',
+            'rubric_section': 'Раздел', 'primary_rubric': 'Основная рубрика',
+            'sub_rubrics': 'Подрубрики', 'rubrics': 'Все рубрики',
             'address': 'Адрес', 'address_comment': 'Комментарий к адресу',
-            'postcode': 'Почтовый индекс', 'living_area': 'Микрорайон', 'district': 'Район', 'city': 'Город',
-            'district_area': 'Округ', 'region': 'Регион', 'country': 'Страна', 'schedule': 'Часы работы',
-            'timezone': 'Часовой пояс', 'general_rating': 'Рейтинг', 'general_review_count': 'Количество отзывов'
+            'postcode': 'Почтовый индекс', 'city': 'Город', 'district': 'Район',
+            'district_area': 'Округ', 'region': 'Регион', 'country': 'Страна',
+            'living_area': 'Микрорайон', 'timezone': 'Часовой пояс',
+            'point_lat': 'Широта', 'point_lon': 'Долгота',
+            'schedule': 'Часы работы', 'schedule_comment': 'Комментарий к расписанию',
+            'general_rating': 'Рейтинг', 'general_review_count': 'Количество отзывов',
+            'review_count_with_stars': 'Отзывы со звёздами',
+            'org_rating': 'Рейтинг организации', 'org_review_count': 'Отзывы организации',
+            'phone_1': 'Телефон', 'mobile': 'Мобильный телефон', 'website_1': 'Веб-сайт',
+            'email_1': 'E-mail', 'whatsapp_1': 'WhatsApp', 'telegram_1': 'Telegram',
+            'instagram_1': 'Instagram', 'vkontakte_1': 'ВКонтакте',
+            'average_check': 'Средний чек / цены',
+            'branch_count': 'Кол-во филиалов',
+            'nearest_station': 'Остановка', 'station_distance': 'Расстояние до остановки, м',
+            'stations': 'Остановки (все)', 'photos': 'Фото URL',
+            'url': '2GIS URL', 'reviews_url': 'Ссылка на отзывы',
         }
 
-        # Expand complex mapping
+        # Expand complex mapping (values + comment columns)
         for k, v in self._complex_mapping.items():
             for n in range(1, self._options.csv.columns_per_entity + 1):
                 data_mapping[f'{k}_{n}'] = f'{v} {n}'
+            data_mapping[f'{k}_comment'] = f'Комментарий: {v}'
 
         if not self._options.csv.add_rubrics:
             data_mapping.pop('rubrics', None)
@@ -59,7 +80,6 @@ class CSVWriter(FileWriter):
             **{
                 'point_lat': 'Широта',
                 'point_lon': 'Долгота',
-                'url': '2GIS URL',
                 'type': 'Тип',
             }
         }
@@ -68,10 +88,12 @@ class CSVWriter(FileWriter):
         # removal later renames single complex columns (e.g. "Телефон 1" -> "Телефон").
         if self._options.csv.clean:
             clean_keys = [
-                'name', 'rubrics', 'address', 'city',
+                'name', 'rubrics', 'address', 'address_comment', 'city', 'district', 'region',
                 'general_rating', 'general_review_count',
-                'phone_1', 'whatsapp_1', 'instagram_1', 'telegram_1',
-                'email_1', 'website_1', 'url',
+                'primary_rubric', 'rubric_section', 'sub_rubrics', 'branch_count', 'average_check',
+                'nearest_station', 'station_distance',
+                'phone_1', 'phone_comment', 'whatsapp_1', 'instagram_1', 'telegram_1',
+                'email_1', 'website_1', 'firm_id', 'url', 'mobile', 'postcode',
             ]
             return {k: v for k, v in full_mapping.items() if k in clean_keys}
 
@@ -246,11 +268,60 @@ class CSVWriter(FileWriter):
         if catalog_item.reviews:
             data['general_rating'] = catalog_item.reviews.general_rating
             data['general_review_count'] = catalog_item.reviews.general_review_count
+            data['org_rating'] = catalog_item.reviews.org_rating
+            data['org_review_count'] = catalog_item.reviews.org_review_count
 
         # Point location
         if catalog_item.point:
             data['point_lat'] = catalog_item.point.lat  # Latitude (широта)
             data['point_lon'] = catalog_item.point.lon  # Longitude (долгота)
+
+        # Branches / photos / stations / prices
+        if catalog_item.org:
+            data['branch_count'] = catalog_item.org.branch_count
+            data['org_id'] = catalog_item.org.id
+        # Остановки сортируем по расстоянию: в «Остановки (все)» каждая выводится как
+        # «Название (N м)», а в отдельную колонку «Расстояние» — минимальное значение.
+        if catalog_item.links and catalog_item.links.nearest_stations:
+            stations_sorted = sorted(catalog_item.links.nearest_stations,
+                                     key=lambda x: x.distance if x.distance is not None else 10 ** 9)
+            first = stations_sorted[0]
+            data['nearest_station'] = first.name
+            data['station_distance'] = first.distance
+            station_names = []
+            for s in stations_sorted:
+                if s.name:
+                    station_names.append(s.name + (f' ({s.distance} м)' if s.distance is not None else ''))
+            data['stations'] = self._options.csv.join_char.join(station_names[:5])
+        data['photos'] = self._options.csv.join_char.join(
+            content.main_photo_url for content in catalog_item.external_content
+            if content.main_photo_url)
+        data['reviews_url'] = catalog_item.reviews_url
+        data['firm_id'] = catalog_item.id.split('_')[0] if catalog_item.id else None
+        data['mobile'] = None
+        for contact_group_item in catalog_item.contact_groups:
+            for contact in contact_group_item.contacts:
+                if contact.type == 'phone':
+                    digits = re.sub(r'\D', '', (contact.text or contact.value) or '')
+                    if re.match(r'^(?:7|8)?9\d{9}$', digits):
+                        data['mobile'] = contact.text or contact.value
+                        break
+            if data['mobile']:
+                break
+        data['average_check'] = _average_check(catalog_item)
+        primary_rubric, sub_rubrics = rubric_sections(catalog_item)
+        data['primary_rubric'] = primary_rubric
+        data['sub_rubrics'] = sub_rubrics
+        primary_rubric_id = None
+        for rubric_item in catalog_item.rubrics:
+            if rubric_item.kind == 'primary':
+                primary_rubric_id = rubric_item.id
+                break
+        data['rubric_section'] = rubric_section_name(primary_rubric_id)
+        if catalog_item.schedule and catalog_item.schedule.comment:
+            data['schedule_comment'] = catalog_item.schedule.comment
+        if catalog_item.reviews:
+            data['review_count_with_stars'] = catalog_item.reviews.general_review_count_with_stars
 
         # Address comment
         data['address_comment'] = catalog_item.address_comment
@@ -300,9 +371,11 @@ class CSVWriter(FileWriter):
                     if data_name in data:
                         data[data_name] = formatter(contact_value) if formatter else contact_value
 
-                        # Add comment on demand
+                        # Add comment on demand (separate column, not glued to value)
                         if self._options.csv.add_comments and contact.comment:
-                            data[data_name] += ' (%s)' % contact.comment
+                            comment_name = f'{contact_type}_comment'
+                            if comment_name in data:
+                                data[comment_name] = contact.comment
 
             # URLs
             for t in ['website', 'vkontakte', 'whatsapp', 'viber', 'telegram',
@@ -317,6 +390,12 @@ class CSVWriter(FileWriter):
             # Values
             for t in ['email', 'skype']:
                 append_contact(t, ['value'])
+            # Comment-only contacts (no value, but have a comment)
+            for contact in contact_group.contacts:
+                if contact.comment and contact.type not in {'phone', 'email', 'website'}:
+                    comment_name = f'{contact.type}_comment'
+                    if comment_name in data and not data.get(comment_name):
+                        data[comment_name] = contact.comment
 
             # Phone (`value` sometimes has strange crap inside, so we better parse `text`.
             # If no `text` field in contact - use `value` attribute)
