@@ -129,12 +129,12 @@ def create_app():
         return Response(content=json.dumps({'ok': False, 'error': msg}),
                         media_type='application/json', status_code=code)
 
-    @get('/', sync_to_thread=True)
+    @get('/', sync_to_thread=True, summary='Дашборд', description='Главная страница веб-интерфейса')
     def index() -> Any:
         return Response(content=(static_dir / 'index.html').read_bytes(),
                         media_type='text/html')
 
-    @post('/api/start', sync_to_thread=True)
+    @post('/api/start', sync_to_thread=True, summary='Запустить парсинг', description='Body: {urls, max_records, max_concurrent, headless, clean, filters, advanced}. Возвращает job_id')
     def api_start(data: dict[str, Any] | None = None) -> Any:
         data = data or {}
         urls = [u.strip() for u in (data.get('urls') or []) if u and u.strip()]
@@ -151,7 +151,7 @@ def create_app():
             return _err(str(e))
         return {'ok': True, 'job_id': job_id}
 
-    @post('/api/stop', sync_to_thread=True)
+    @post('/api/stop', sync_to_thread=True, summary='Остановить задачу', description='job_id в теле')
     def api_stop(data: dict[str, Any] | None = None) -> Any:
         data = data or {}
         job_id = data.get('job_id') or None
@@ -159,17 +159,17 @@ def create_app():
             return _err('Задача не найдена', 404)
         return {'ok': jobs.stop(job_id)}
 
-    @post('/api/clear', sync_to_thread=True)
+    @post('/api/clear', sync_to_thread=True, summary='Очистить задачу', description='job_id в теле')
     def api_clear(data: dict[str, Any] | None = None) -> Any:
         data = data or {}
         job_id = data.get('job_id') or None
         return {'ok': jobs.clear(job_id)}
 
-    @get('/api/jobs', sync_to_thread=True)
+    @get('/api/jobs', sync_to_thread=True, summary='Список задач', description='id, status, count')
     def api_jobs() -> Any:
         return {'jobs': jobs.list_jobs()}
 
-    @get('/api/status', sync_to_thread=True)
+    @get('/api/status', sync_to_thread=True, summary='Статус задачи', description='job_id, cursor. Без job_id - последняя')
     def api_status(cursor: int = 0, job_id: str | None = None) -> Any:
         job = jobs.get(job_id)
         if not job:
@@ -185,14 +185,14 @@ def create_app():
             'cursor': cursor + len(logs),
         }
 
-    @get('/api/results', sync_to_thread=True)
+    @get('/api/results', sync_to_thread=True, summary='Результаты задачи', description='job_id')
     def api_results(job_id: str | None = None) -> Any:
         job = jobs.get(job_id)
         if not job:
             return _err('Задача не найдена', 404)
         return {'records': job.results()}
 
-    @get('/api/generator', sync_to_thread=True)
+    @get('/api/generator', sync_to_thread=True, summary='Данные генератора ссылок', description='countries, cities, rubrics')
     def api_generator() -> Any:
         """Data for the link generator: countries, cities, rubrics."""
         cities = [
@@ -204,7 +204,7 @@ def create_app():
         countries.sort(key=lambda c: c['name'])
         return {'countries': countries, 'cities': cities, 'rubrics': _load_rubrics()}
 
-    @get('/api/download', sync_to_thread=True)
+    @get('/api/download', sync_to_thread=True, summary='Скачать результат', description='format, job_id')
     def api_download(format: str = 'csv', job_id: str | None = None) -> Any:
         if format not in _DOWNLOAD_NAMES:
             return _err('Неизвестный формат')
@@ -217,18 +217,18 @@ def create_app():
             logger.error('Ошибка экспорта: %s', e)
             return _err(str(e), 500)
 
-    @get('/api/history', sync_to_thread=True)
+    @get('/api/history', sync_to_thread=True, summary='История парсингов', description='Сохранённые задачи')
     def api_history() -> Any:
         return {'items': history.list()}
 
-    @get('/api/history/{hid:str}/results', sync_to_thread=True)
+    @get('/api/history/{hid:str}/results', sync_to_thread=True, summary='Записи из истории', description='hid')
     def api_history_results(hid: str) -> Any:
         docs = history.docs(hid)
         if docs is None:
             return _err('Запись не найдена', 404)
         return {'records': history.records(hid)}
 
-    @get('/api/history/{hid:str}/download', sync_to_thread=True)
+    @get('/api/history/{hid:str}/download', sync_to_thread=True, summary='Скачать из истории', description='hid, format')
     def api_history_download(hid: str, format: str = 'csv') -> Any:
         if format not in _DOWNLOAD_NAMES:
             return _err('Неизвестный формат')
@@ -245,7 +245,7 @@ def create_app():
             logger.error('Ошибка экспорта истории: %s', e)
             return _err(str(e), 500)
 
-    @post('/api/history/merge', sync_to_thread=True)
+    @post('/api/history/merge', sync_to_thread=True, summary='Объединить парсинги', description='ids в теле')
     def api_history_merge(data: dict[str, Any] | None = None) -> Any:
         data = data or {}
         ids = [str(i) for i in (data.get('ids') or [])]
@@ -257,7 +257,7 @@ def create_app():
         new_id, count = result
         return {'ok': True, 'id': new_id, 'count': count}
 
-    @delete('/api/history/{hid:str}', status_code=200, sync_to_thread=True)
+    @delete('/api/history/{hid:str}', status_code=200, sync_to_thread=True, summary='Удалить из истории', description='hid')
     def api_history_delete(hid: str) -> Any:
         return {'ok': history.delete(hid)}
 
