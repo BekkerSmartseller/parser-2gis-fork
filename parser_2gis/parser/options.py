@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import List, Optional
+
 from pydantic import BaseModel, ConfigDict, NonNegativeInt, PositiveInt
 
 from ..chrome.options import default_memory_limit
@@ -21,6 +23,9 @@ class ParserOptions(BaseModel):
         max_records: Max number of records to parse from one URL.
         use_gc: Use Garbage Collector.
         gc_pages_interval: Run Garbage Collector every N pages (if `use_gc` enabled).
+        max_concurrent: Max number of parse jobs running simultaneously in the web UI.
+        proxies: List of proxies to rotate between concurrent jobs (each job gets one).
+        proxy_mode: 'round_robin' assigns proxies sequentially, 'random' picks at random.
     """
     model_config = ConfigDict(validate_assignment=True)
 
@@ -29,3 +34,6 @@ class ParserOptions(BaseModel):
     max_records: PositiveInt = default_max_records()
     use_gc: bool = False
     gc_pages_interval: PositiveInt = 10
+    max_concurrent: PositiveInt = 3
+    proxies: List[str] = []
+    proxy_mode: str = 'round_robin'

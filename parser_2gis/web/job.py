@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import queue
 import threading
+import uuid
 from typing import Any, Optional
 
 from ..config import Configuration
@@ -15,6 +17,26 @@ from .history import History
 
 # Keep at most this many log lines in memory for the live progress panel.
 _MAX_LOG_LINES = 5000
+
+# Thread-safe round-robin counter for proxy rotation across concurrent jobs.
+_proxy_index = -1
+_proxy_index_lock = threading.Lock()
+
+
+def _pick_proxy(config: Configuration) -> Optional[str]:
+    """Rotate a proxy from config.parser.proxies for a single job.
+
+    Returns None if no proxies configured. Proxies are assigned round-robin so
+    that concurrent jobs spread evenly across the list (each job gets one proxy;
+    rotation happens only between tasks).
+    """
+    proxies = list(config.parser.proxies or [])
+    if not proxies:
+        return None
+    global _proxy_index
+    with _proxy_index_lock:
+        _proxy_index += 1
+        return proxies[_proxy_index % len(proxies)]
 
 
 class CollectorWriter(FileWriter):
@@ -60,16 +82,19 @@ class _ListLogHandler(logging.Handler):
 
 
 class ParseJob:
-    """Background parsing job for the web dashboard (single job at a time)."""
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._thread: Optional[threading.Thread] = None
+    """A single background parse job (one URL set, one Chrome instance)."""
+    def __init__(self, job_id: str, config: Configuration, urls: list[str]) -> None:
+        self.id = job_id
+        self._config = config
+        self._urls = urls
         self._parser = None
         self._cancelled = False
-        self.status = 'idle'  # idle | running | done | stopped | error
+        self.status = 'queued'  # queued | running | done | stopped | error
         self.logs: list[str] = []
         self.error: Optional[str] = None
         self.collector: Optional[CollectorWriter] = None
+        # Each concurrent Chrome uses its own rotated proxy.
+        config.chrome.proxy = _pick_proxy(config)
 
     @property
     def running(self) -> bool:
@@ -79,57 +104,44 @@ class ParseJob:
     def count(self) -> int:
         return len(self.collector.docs) if self.collector else 0
 
-    def start(self, config: Configuration, urls: list[str]) -> None:
-        with self._lock:
-            if self.running:
-                raise RuntimeError('Парсинг уже запущен')
-            self.status = 'running'
-            self.logs = []
-            self.error = None
-            self._cancelled = False
-            self.collector = CollectorWriter(config.writer)
-
-        self._thread = threading.Thread(target=self._run, args=(config, urls), daemon=True)
-        self._thread.start()
+    def start(self) -> None:
+        """Start parsing in a daemon thread."""
+        self.status = 'running'
+        self.collector = CollectorWriter(self._config.writer)
+        thread = threading.Thread(target=self._run, daemon=True)
+        thread.start()
 
     def stop(self) -> None:
-        with self._lock:
-            self._cancelled = True
-            if self._parser:
-                try:
-                    self._parser.close()
-                except Exception:
-                    pass
+        self._cancelled = True
+        if self._parser:
+            try:
+                self._parser.close()
+            except Exception:
+                pass
 
-    def clear(self) -> bool:
-        """Drop the current results/logs (history is untouched). No-op while running."""
-        with self._lock:
-            if self.running:
-                return False
-            self.collector = None
-            self.logs = []
-            self.error = None
-            self.status = 'idle'
-            return True
+    def cancel_queued(self) -> None:
+        """Mark a queued job as cancelled (never started)."""
+        self._cancelled = True
+        self.status = 'stopped'
 
-    def _run(self, config: Configuration, urls: list[str]) -> None:
+    def _run(self) -> None:
         handler = _ListLogHandler(self.logs)
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)  # ensure INFO progress lines are captured
         try:
             assert self.collector is not None
             writer: FileWriter = self.collector
-            if any_filter_enabled(config.filters):
-                writer = FilterWriter(self.collector, config.filters)
+            if any_filter_enabled(self._config.filters):
+                writer = FilterWriter(self.collector, self._config.filters)
 
             logger.info('Парсинг запущен.')
             with writer:
-                for url in urls:
+                for url in self._urls:
                     if self._cancelled:
                         break
                     logger.info('Парсинг ссылки %s', url)
-                    self._parser = get_parser(url, chrome_options=config.chrome,
-                                              parser_options=config.parser)
+                    self._parser = get_parser(url, chrome_options=self._config.chrome,
+                                              parser_options=self._config.parser)
                     with self._parser:
                         if not self._cancelled:
                             self._parser.parse(writer)
@@ -152,7 +164,7 @@ class ParseJob:
             # records survive reloads and aren't lost when the user hits Stop.
             if self.status in ('done', 'stopped') and self.collector and self.collector.docs:
                 try:
-                    History().save(urls, self.collector.docs,
+                    History().save(self._urls, self.collector.docs,
                                    self.collector._options.model_dump(mode='json'))
                 except Exception as e:
                     logger.error('Не удалось сохранить историю: %s', e)
@@ -169,11 +181,89 @@ class ParseJob:
                 out.append(record)
         return out
 
-    def export(self, output_path: str, file_format: str) -> None:
-        """Write collected documents to `output_path` in the given format."""
-        if not self.collector:
-            raise RuntimeError('Нет данных для экспорта')
-        # Filters were already applied while collecting; export raw collected docs.
-        with get_writer(output_path, file_format, self.collector._options) as writer:
-            for doc in self.collector.docs:
-                writer.write(doc)
+
+class JobManager:
+    """Manages concurrent parse jobs.
+
+    A dedicated daemon worker thread drains a FIFO queue; a ``threading.Semaphore``
+    bounds how many Chrome instances run at once. Each job has its own id so the
+    client can poll / stop a specific one. Proxies from the request are assigned
+    per job and rotated between concurrent tasks (round-robin).
+    """
+    def __init__(self, max_concurrent: int = 3) -> None:
+        self._max_concurrent = max(1, int(max_concurrent))
+        self._semaphore = threading.Semaphore(self._max_concurrent)
+        self._lock = threading.Lock()
+        self._queue: queue.Queue[ParseJob] = queue.Queue()
+        self._jobs: dict[str, ParseJob] = {}
+        self._worker_thread: Optional[threading.Thread] = None
+        self._start_worker()
+
+    def _start_worker(self) -> None:
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            return
+
+        def worker_loop() -> None:
+            while True:
+                job = self._queue.get()
+                with self._semaphore:
+                    if job._cancelled:
+                        # Cancelled while queued — never started Chrome.
+                        job.status = 'stopped'
+                        continue
+                    job.start()  # spawns the job's own daemon parse thread
+
+        self._worker_thread = threading.Thread(target=worker_loop, daemon=True)
+        self._worker_thread.start()
+
+    def start(self, config: Configuration, urls: list[str]) -> str:
+        """Queue a new parse job. Returns its job_id."""
+        job_id = uuid.uuid4().hex[:12]
+        # Deep-copy config so each job owns its ChromeOptions (proxy must not leak).
+        job_config = config.model_copy(deep=True)
+        job = ParseJob(job_id, job_config, urls)
+        with self._lock:
+            self._jobs[job_id] = job
+        self._queue.put_nowait(job)
+        return job_id
+
+    def get(self, job_id: Optional[str]) -> Optional[ParseJob]:
+        with self._lock:
+            if job_id is None:
+                # Fall back to the most recently created job.
+                return next(iter(self._jobs.values()), None)
+            return self._jobs.get(job_id)
+
+    def stop(self, job_id: Optional[str] = None) -> bool:
+        job = self.get(job_id)
+        if not job:
+            return False
+        if job.status == 'queued':
+            job.cancel_queued()
+        else:
+            job.stop()
+        return True
+
+    def clear(self, job_id: Optional[str] = None) -> bool:
+        job = self.get(job_id)
+        if not job:
+            return False
+        if job.running:
+            return False
+        job.collector = None
+        job.logs = []
+        job.error = None
+        job.status = 'idle'
+        return True
+
+    def list_jobs(self) -> list[dict]:
+        with self._lock:
+            return [{'id': j.id, 'status': j.status, 'count': j.count}
+                    for j in self._jobs.values()]
+
+    def stop_all(self) -> None:
+        for job in list(self._jobs.values()):
+            if job.status == 'queued':
+                job.cancel_queued()
+            elif job.running:
+                job.stop()

@@ -13,7 +13,7 @@ from ..logger import logger
 from ..paths import data_path
 from ..writer import WriterOptions, get_writer
 from .history import History
-from .job import ParseJob
+from .job import JobManager
 
 # Download file names per format.
 _DOWNLOAD_NAMES = {'csv': '2gis.csv', 'xlsx': '2gis.xlsx',
@@ -62,6 +62,14 @@ def _build_config(data: dict[str, Any]) -> Configuration:
     config.parser.max_records = max(1, int(data.get('max_records', 100)))
     # Default to the full column set; "clean view" is an explicit opt-in.
     config.writer.csv.clean = bool(data.get('clean', False))
+
+    # Concurrent jobs / proxies (per request).
+    if data.get('max_concurrent'):
+        config.parser.max_concurrent = max(1, int(data['max_concurrent']))
+    if data.get('proxies'):
+        config.parser.proxies = [p.strip() for p in data['proxies'] if p and p.strip()]
+    if data.get('proxy_mode'):
+        config.parser.proxy_mode = str(data['proxy_mode'])
 
     adv = data.get('advanced', {}) or {}
     if adv:
@@ -117,7 +125,7 @@ def create_app():
     from litestar.static_files.config import StaticFilesConfig
 
     static_dir = _static_dir()
-    job = ParseJob()
+    jobs = JobManager(max_concurrent=3)
     history = History()
 
     def _err(msg: str, code: int = 400) -> Any:
@@ -131,34 +139,48 @@ def create_app():
                         media_type='text/html')
 
     @post('/api/start', sync_to_thread=True)
-    def api_start(data: dict[str, Any] | None = None) -> dict[str, Any]:
+    def api_start(data: dict[str, Any] | None = None) -> Any:
         data = data or {}
         urls = [u.strip() for u in (data.get('urls') or []) if u and u.strip()]
         if not urls:
             return _err('Не указаны ссылки')
         try:
             config = _build_config(data)
-            job.start(config, urls)
+            # Update worker concurrency on the fly from the request's max_concurrent.
+            job_id = jobs.start(config, urls)
         except RuntimeError as e:
             return _err(str(e), 409)
         except Exception as e:
             logger.error('Не удалось запустить парсинг: %s', e)
             return _err(str(e))
-        return {'ok': True}
+        return {'ok': True, 'job_id': job_id}
 
     @post('/api/stop', sync_to_thread=True)
-    def api_stop() -> dict[str, Any]:
-        job.stop()
-        return {'ok': True}
+    def api_stop(data: dict[str, Any] | None = None) -> Any:
+        data = data or {}
+        job_id = data.get('job_id') or None
+        if job_id and job_id not in jobs._jobs:
+            return _err('Задача не найдена', 404)
+        return {'ok': jobs.stop(job_id)}
 
     @post('/api/clear', sync_to_thread=True)
-    def api_clear() -> dict[str, Any]:
-        return {'ok': job.clear()}
+    def api_clear(data: dict[str, Any] | None = None) -> Any:
+        data = data or {}
+        job_id = data.get('job_id') or None
+        return {'ok': jobs.clear(job_id)}
+
+    @get('/api/jobs', sync_to_thread=True)
+    def api_jobs() -> Any:
+        return {'jobs': jobs.list_jobs()}
 
     @get('/api/status', sync_to_thread=True)
-    def api_status(cursor: int = 0) -> dict[str, Any]:
+    def api_status(cursor: int = 0, job_id: str | None = None) -> Any:
+        job = jobs.get(job_id)
+        if not job:
+            return _err('Задача не найдена', 404)
         logs = job.logs[cursor:]
         return {
+            'job_id': job.id,
             'status': job.status,
             'running': job.running,
             'count': job.count,
@@ -168,11 +190,14 @@ def create_app():
         }
 
     @get('/api/results', sync_to_thread=True)
-    def api_results() -> dict[str, Any]:
+    def api_results(job_id: str | None = None) -> Any:
+        job = jobs.get(job_id)
+        if not job:
+            return _err('Задача не найдена', 404)
         return {'records': job.results()}
 
     @get('/api/generator', sync_to_thread=True)
-    def api_generator() -> dict[str, Any]:
+    def api_generator() -> Any:
         """Data for the link generator: countries, cities, rubrics."""
         cities = [
             {'name': c['name'], 'code': c['code'], 'domain': c['domain'],
@@ -184,25 +209,24 @@ def create_app():
         return {'countries': countries, 'cities': cities, 'rubrics': _load_rubrics()}
 
     @get('/api/download', sync_to_thread=True)
-    def api_download(format: str = 'csv') -> Any:
+    def api_download(format: str = 'csv', job_id: str | None = None) -> Any:
         if format not in _DOWNLOAD_NAMES:
             return _err('Неизвестный формат')
-        if not job.count:
+        job = jobs.get(job_id)
+        if not job or not job.collector:
             return _err('Нет данных')
-
         try:
-            assert job.collector is not None
             return _export_response(job.collector.docs, job.collector._options, format)
         except Exception as e:
             logger.error('Ошибка экспорта: %s', e)
             return _err(str(e), 500)
 
     @get('/api/history', sync_to_thread=True)
-    def api_history() -> dict[str, Any]:
+    def api_history() -> Any:
         return {'items': history.list()}
 
     @get('/api/history/{hid:str}/results', sync_to_thread=True)
-    def api_history_results(hid: str) -> dict[str, Any]:
+    def api_history_results(hid: str) -> Any:
         docs = history.docs(hid)
         if docs is None:
             return _err('Запись не найдена', 404)
@@ -226,7 +250,7 @@ def create_app():
             return _err(str(e), 500)
 
     @post('/api/history/merge', sync_to_thread=True)
-    def api_history_merge(data: dict[str, Any] | None = None) -> dict[str, Any]:
+    def api_history_merge(data: dict[str, Any] | None = None) -> Any:
         data = data or {}
         ids = [str(i) for i in (data.get('ids') or [])]
         if not ids:
@@ -238,7 +262,7 @@ def create_app():
         return {'ok': True, 'id': new_id, 'count': count}
 
     @delete('/api/history/{hid:str}', status_code=200, sync_to_thread=True)
-    def api_history_delete(hid: str) -> dict[str, Any]:
+    def api_history_delete(hid: str) -> Any:
         return {'ok': history.delete(hid)}
 
     return Litestar(
@@ -247,6 +271,7 @@ def create_app():
             api_start,
             api_stop,
             api_clear,
+            api_jobs,
             api_status,
             api_results,
             api_generator,

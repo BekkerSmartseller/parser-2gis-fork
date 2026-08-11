@@ -41,6 +41,10 @@ class ChromeBrowser():
             f'--js-flags=--expose-gc --max-old-space-size={chrome_options.memory_limit}',
         ]
 
+        if chrome_options.proxy:
+            logger.debug('Chrome использует прокси: %s', chrome_options.proxy)
+            self._chrome_cmd.append('--proxy-server=%s' % chrome_options.proxy)
+
         if chrome_options.start_maximized:
             self._chrome_cmd.append('--start-maximized')
 
