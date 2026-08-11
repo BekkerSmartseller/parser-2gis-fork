@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="kk">
+<html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -250,14 +250,14 @@
         </label>
         <div class="field"><span data-i18n="rubric">Айдар (міндетті емес)</span>
           <div class="msel" id="genRubWrap">
-            <button type="button" class="msel-btn" id="genRubBtn">Айдарсыз</button>
+            <button type="button" class="msel-btn" id="genRubBtn" data-i18n="no_rubric">Без рубрики</button>
             <div class="msel-panel" id="genRubPanel">
               <input type="text" id="genRubricSearch" data-i18n-ph="rubric_search_ph" placeholder="Айдарды іздеу…" autocomplete="off">
               <div class="genRubList" id="genRubList"></div>
             </div>
           </div>
         </div>
-        <button type="button" class="btn-gen" id="genAdd">Сілтемелерді қосу</button>
+        <button type="button" class="btn-gen" id="genAdd" data-i18n="add_links">Добавить ссылки</button>
       </div>
     </details>
 
@@ -298,7 +298,7 @@
       <summary data-i18n="params_title">📋 Параметрлер</summary>
       <div class="sectbody">
         <label class="field"><span data-i18n="maxrec">Бір URL-ден макс. жазба</span><input type="number" id="maxrec" min="1" step="1" value="50"></label>
-        <label class="check"><input type="checkbox" id="clean" checked> <span data-i18n="clean">Таза көрініс (қоқыссыз)</span></label>
+        <label class="check"><input type="checkbox" id="clean"> <span data-i18n="clean">Таза көрініс (қоқыссыз)</span></label>
         <label class="check"><input type="checkbox" id="headless" checked> <span data-i18n="headless">Жасырын браузер (headless)</span></label>
       </div>
     </details>
@@ -354,10 +354,10 @@
         <option value="reviews_asc" data-i18n="sort_reviews_asc">Пікірлер ↑</option>
         <option value="rubric_asc" data-i18n="sort_rubric">Айдар бойынша А–Я</option>
       </select>
-      <div class="viewbtns" id="viewbtns">
-        <button data-cols="1" title="1 колонка"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
-        <button data-cols="2" title="2 колонки"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="12" rx="1.5" fill="currentColor"/><rect x="9" y="2" width="5" height="12" rx="1.5" fill="currentColor"/></svg></button>
-        <button data-cols="3" title="3 колонки"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2" width="3.2" height="12" rx="1" fill="currentColor"/><rect x="6.4" y="2" width="3.2" height="12" rx="1" fill="currentColor"/><rect x="11.3" y="2" width="3.2" height="12" rx="1" fill="currentColor"/></svg></button>
+      <div class="viewbtns" id="viewbtns" role="group" aria-label="Количество колонок">
+        <button type="button" data-cols="1" data-i18n-title="col1" title="1 колонка"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
+        <button type="button" data-cols="2" data-i18n-title="col2" title="2 колонки"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="12" rx="1.5" fill="currentColor"/><rect x="9" y="2" width="5" height="12" rx="1.5" fill="currentColor"/></svg></button>
+        <button type="button" data-cols="3" data-i18n-title="col3" title="3 колонки"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2" width="3.2" height="12" rx="1" fill="currentColor"/><rect x="6.4" y="2" width="3.2" height="12" rx="1" fill="currentColor"/><rect x="11.3" y="2" width="3.2" height="12" rx="1" fill="currentColor"/></svg></button>
       </div>
       <div class="dl" id="dlbar">
         <span class="dl-label" data-i18n="dl_label">Жүктеу:</span>
@@ -384,9 +384,10 @@
   var $=function(id){return document.getElementById(id)};
   var poll=null, cursor=0, records=[], histId=null;
 
-  // ---- i18n (Қазақша default, Русский) ----
+  // ---- i18n (Русский | Қазақша) ----
   var T={
     kk:{
+      col1:'1 баған', col2:'2 баған', col3:'3 баған',
       urls_label:'Сілтемелер', urls_hint:'Әр жолда бір 2GIS сілтемесі. Бірнеше қала және айдар болуы мүмкін.',
       gen_title:'🔗 Сілтеме жасау', country:'Ел', cities:'Қалалар', select_all:'барлығын таңдау', reset:'тазалау',
       query:'Сұраныс', query_ph:'Тере бастаңыз: Кафе, Дәріхана…', rubric:'Айдар (міндетті емес)',
@@ -420,6 +421,7 @@
       c_del:'Бұл жазбаны тарихтан жою керек пе?'
     },
     ru:{
+      col1:'1 колонка', col2:'2 колонки', col3:'3 колонки',
       urls_label:'Направления', urls_hint:'По одной ссылке 2GIS на строку. Можно несколько городов и рубрик.',
       gen_title:'🔗 Создать ссылки', country:'Страна', cities:'Города', select_all:'выбрать все', reset:'сбросить',
       query:'Запрос', query_ph:'Начните печатать: Кафе, Аптеки…', rubric:'Рубрика (необязательно)',
@@ -453,7 +455,7 @@
       c_del:'Удалить эту запись из истории?'
     }
   };
-  var LANG='kk', lastStatus='idle';
+  var LANG='ru', lastStatus='idle';
   function t(k){return (T[LANG]&&T[LANG][k]!=null)?T[LANG][k]:(T.kk[k]!=null?T.kk[k]:k);}
   function applyLang(lang){
     LANG=(lang==='ru')?'ru':'kk'; var d=T[LANG];
@@ -475,6 +477,37 @@
   function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function digits(s){return (s||'').replace(/\D/g,'');}
+
+  // Сохранение/восстановление настроек боковой панели (localStorage).
+  var CFG_KEY='p2gis_settings';
+  function saveSettings(){
+    try{localStorage.setItem(CFG_KEY,JSON.stringify({
+      urls:$('urls').value,
+      maxrec:$('maxrec').value,headless:$('headless').checked,clean:$('clean').checked,
+      f_dedup_niches:$('f_dedup_niches').checked,f_dedup:$('f_dedup').checked,f_phone:$('f_phone').checked,
+      f_wa:$('f_wa').checked,f_social:$('f_social').checked,f_email:$('f_email').checked,f_site:$('f_site').checked,
+      f_rating:$('f_rating').value,f_reviews:$('f_reviews').value,
+      a_images:$('a_images').checked,a_max:$('a_max').checked,a_skip404:$('a_skip404').checked,
+      a_rubrics:$('a_rubrics').checked,a_comments:$('a_comments').checked,a_rmempty:$('a_rmempty').checked,
+      a_rmdup:$('a_rmdup').checked,a_delay:$('a_delay').value,a_cols:$('a_cols').value,
+      a_mem:$('a_mem').value,a_enc:$('a_enc').value
+    }));}catch(_){}
+  }
+  function restoreSettings(){
+    var s={};try{s=JSON.parse(localStorage.getItem(CFG_KEY)||'{}');}catch(_){}
+    if(!s||typeof s!=='object')return;
+    ['urls','maxrec','a_delay','a_cols','a_mem','f_rating','f_reviews'].forEach(function(k){if(s[k]!=null&&$(k))$(k).value=s[k];});
+    ['headless','clean','f_dedup_niches','f_dedup','f_phone','f_wa','f_social','f_email','f_site',
+     'a_images','a_max','a_skip404','a_rubrics','a_comments','a_rmempty','a_rmdup'].forEach(function(k){
+       if(s[k]!=null&&$(k))$(k).checked=!!s[k];});
+    if(s.a_enc!=null&&$('a_enc'))$('a_enc').value=s.a_enc;
+  }
+  var _cfgTimer=null;
+  function _scheduleCfgSave(){clearTimeout(_cfgTimer);_cfgTimer=setTimeout(saveSettings,250);}
+  document.addEventListener('DOMContentLoaded',function(){
+    var aside=document.querySelector('aside');
+    if(aside){aside.addEventListener('input',_scheduleCfgSave);aside.addEventListener('change',_scheduleCfgSave);}
+  });
 
   function payload(){
     return {
@@ -790,6 +823,8 @@
   function renderGenRubrics(){
     var term=$('genRubricSearch').value.trim().toLowerCase();
     var list=curRubrics();
+    // Исключаем псевдо-рубрику «Без рубрики» (code -1) из данных.
+    list=list.filter(function(r){return r.code!=='-1';});
     if(term)list=list.filter(function(r){return r.label.toLowerCase().indexOf(term)>-1;});
     list=list.slice(0,300);
     var html='<div class="ri'+(GEN.rubCode?'':' sel')+'" data-code="">'+t('no_rubric_opt')+'</div>';
@@ -864,9 +899,10 @@
     setTimeout(function(){btn.textContent=t('add_links');},1300);
   });
 
-  // Restore state on load: preload generator data, show last results / resume a job.
+  // Restore state on load: settings, language, generator, results.
   (function init(){
-    var savedLang='kk'; try{savedLang=localStorage.getItem('lang')||'kk';}catch(_){}
+    restoreSettings();
+    var savedLang='ru'; try{savedLang=localStorage.getItem('lang')||'ru';}catch(_){}
     applyLang(savedLang);
     loadGenerator();
     loadHistory();

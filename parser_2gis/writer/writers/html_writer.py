@@ -51,7 +51,8 @@ class HTMLWriter(FileWriter):
         esc = html.escape
 
         search_blob = ' '.join(filter(None, [
-            r['name'], r['address'], r['city'],
+            r['name'], r['address'], r['city'], r.get('nearest_station', ''),
+            r.get('primary_rubric', ''), r.get('sub_rubrics', ''),
             ' '.join(r['rubrics']), c.get('phone', ''),
         ])).lower()
 
@@ -59,17 +60,50 @@ class HTMLWriter(FileWriter):
         if r['rating']:
             reviews = f" · {r['review_count']} отз." if r['review_count'] else ''
             rating_html = f'<span class="rating">★ {esc(str(r["rating"]))}{esc(reviews)}</span>'
+        if r.get('org_rating') and r.get('org_review_count'):
+            rating_html += (f'<span class="rating">★ {esc(str(r["org_rating"]))} · '
+                            f'{r["org_review_count"]} отз. организации</span>')
 
-        rubrics_html = ''
-        if r['rubrics']:
-            rubrics_html = '<div class="rubrics">' + esc(' · '.join(r['rubrics'])) + '</div>'
+        type_html = ''
+        type_bits = []
+        if r.get('rubric_section'):
+            type_bits.append(esc(r['rubric_section']))
+        if r.get('primary_rubric'):
+            type_bits.append(esc(r['primary_rubric']))
+        if r.get('sub_rubrics'):
+            type_bits.append(esc(r['sub_rubrics']))
+        if r.get('branch_count') and r['branch_count'] > 1:
+            type_bits.append(f'{r["branch_count"]} филиала')
+        if type_bits:
+            type_html = '<div class="rubrics">' + ' · '.join(type_bits) + '</div>'
 
         meta_bits = []
+        if r.get('firm_id'):
+            meta_bits.append(f'ID: {esc(r["firm_id"])}')
         if r['address']:
             meta_bits.append(esc(r['address']))
+        if r.get('address_comment'):
+            meta_bits.append(esc(r['address_comment']))
         if r['city']:
             meta_bits.append(esc(r['city']))
+        if r.get('district'):
+            meta_bits.append(esc(r['district']))
+        if r.get('region') and r.get('region') != r.get('city'):
+            meta_bits.append(esc(r['region']))
         meta_html = '<div class="meta">' + ', '.join(meta_bits) + '</div>' if meta_bits else ''
+
+        extra_html = ''
+        if r.get('average_check'):
+            extra_html += f'<div class="price">💳 {esc(r["average_check"])}</div>'
+        if r.get('mobile'):
+            extra_html += f'<div class="mobile">📱 {esc(r["mobile"])}</div>'
+        if r.get('postcode'):
+            extra_html += f'<div class="postcode">🏷 Индекс: {esc(r["postcode"])}</div>'
+        if r.get('nearest_station'):
+            dist = f' ({r["station_distance"]} м)' if r.get('station_distance') else ''
+            extra_html += f'<div class="station">🚏 {esc(r["nearest_station"])}{dist}</div>'
+        if r.get('attributes'):
+            extra_html += f'<div class="attrs">{esc(r["attributes"])}</div>'
 
         buttons = []
         if 'whatsapp' in c:
@@ -87,11 +121,15 @@ class HTMLWriter(FileWriter):
             buttons.append(f'<a class="btn" href="mailto:{esc(c["email"])}">✉️ E-mail</a>')
         if r['url']:
             buttons.append(f'<a class="btn gis" href="{esc(r["url"])}" target="_blank" rel="noopener">2GIS</a>')
+        if r.get('reviews_url'):
+            buttons.append(f'<a class="btn rv" href="{esc(r["reviews_url"])}" target="_blank" rel="noopener">⭐ Отзывы</a>')
+        if r.get('photos'):
+            buttons.append(f'<a class="btn ph" href="{esc(r["photos"][0])}" target="_blank" rel="noopener">📷 Фото</a>')
 
         return (
             f'<article class="card" data-search="{esc(search_blob)}">'
             f'<div class="card-head"><h2>{esc(r["name"])}</h2>{rating_html}</div>'
-            f'{rubrics_html}{meta_html}'
+            f'{type_html}{meta_html}{extra_html}'
             f'<div class="actions">{"".join(buttons)}</div>'
             f'</article>\n'
         )
@@ -143,6 +181,12 @@ _PAGE_HEAD = '''<!DOCTYPE html>
   .btn.tg{background:#e8f4fb;border-color:#cfe9f8;color:#1b7fb8}
   .btn.ig{background:#fdeef5;border-color:#f7d3e4;color:var(--ig)}
   .btn.gis{background:#eafaef;border-color:#cdeed7;color:#1e9e4a}
+  .btn.rv{background:#f2f0ff;border-color:#ddd7f7;color:#5b4bc4}
+  .btn.ph{background:#eef7ef;border-color:#d3ead6;color:#278a3b}
+  .price{color:#b3541e;background:#fff4e8;border:1px solid #ffe0c0;
+    padding:3px 10px;border-radius:999px;font-size:12.5px;font-weight:600;align-self:flex-start}
+  .station{color:#095e2e;font-size:13px;font-weight:500}
+  .attrs{color:var(--muted);font-size:12.5px;line-height:1.45}
   #empty{display:none;text-align:center;color:var(--muted);padding:60px 0;font-size:15px}
   @media (max-width:480px){main{grid-template-columns:1fr}}
 </style>

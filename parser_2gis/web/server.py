@@ -59,7 +59,8 @@ def _build_config(data: dict[str, Any]) -> Configuration:
     config = Configuration()
     config.chrome.headless = bool(data.get('headless', True))
     config.parser.max_records = max(1, int(data.get('max_records', 100)))
-    config.writer.csv.clean = bool(data.get('clean', True))
+    # Default to the full column set; "clean view" is an explicit opt-in.
+    config.writer.csv.clean = bool(data.get('clean', False))
 
     adv = data.get('advanced', {}) or {}
     if adv:
