@@ -337,7 +337,7 @@
       <button class="btn-run" id="run" data-i18n="run">Бастау</button>
       <button class="btn-stop" id="stop" style="display:none" data-i18n="stop">Тоқтату</button>
     </div>
-  <div class='group' style='margin-top:4px'><label class='h' for='maxconc'>Параллельных задач (max concurrent)</label><input id='maxconc' type='number' min='1' value='3'><label class='h' for='proxies'>Прокси (по одной на строку, ротация между задачами)</label><textarea id='proxies' placeholder='user:pass@host:port / socks5://host:port' style='min-height:88px'></textarea><p class='hint'>Прокси применяются к параллельным задачам (каждый job - свой прокси).</p></div>
+  <div class="group" style="margin-top:4px"><label class='h' for='maxconc'>Параллельных задач (max concurrent)</label><input id='maxconc' type='number' min='1' value='3'><label class='h' for='proxies'>Прокси (по одной на строку, ротация между задачами)</label><textarea id='proxies' placeholder='user:pass@host:port / socks5://host:port' style='min-height:88px'></textarea><p class='hint'>Прокси применяются к параллельным задачам (каждый job - свой прокси).</p></div>
 </aside>
 
   <main>
@@ -472,7 +472,6 @@
       $('genRubBtn').textContent=GEN.rubCode?GEN.rubLabel:t('no_rubric');}
     setStatus(lastStatus); loadHistory(); renderGrid();
     try{try{localStorage.setItem('maxconc',($('maxconc').value||'3'))}catch(e){}
-try{localStorage.setItem('proxies',($('proxies').value||''))}catch(e){}
 localStorage.setItem('lang',LANG);}catch(_){}
   }
   $('langbtns').addEventListener('click',function(e){var b=e.target.closest('button'); if(b)applyLang(b.getAttribute('data-lang'));});
@@ -517,8 +516,6 @@ localStorage.setItem('lang',LANG);}catch(_){}
       urls: $('urls').value.split('\n'),
       max_records: parseInt($('maxrec').value||'50',10),
       max_concurrent: parseInt($('maxconc').value||'3',10),
-      proxies: ($('proxies').value||'').split('\n').map(function(x){return x.trim();}).filter(Boolean),
-      proxy_mode: 'round_robin',
       headless: $('headless').checked,
       clean: $('clean').checked,
       filters: {
@@ -925,5 +922,4 @@ localStorage.setItem('lang',LANG);}catch(_){}
 </script>
 </body>
 </html>try{var _m=localStorage.getItem('maxconc');if(_m!==null&&$('maxconc'))$('maxconc').value=_m;}catch(e){}
-try{var _p=localStorage.getItem('proxies');if(_p!==null&&$('proxies'))$('proxies').value=_p;}catch(e){}
 

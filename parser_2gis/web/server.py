@@ -66,10 +66,6 @@ def _build_config(data: dict[str, Any]) -> Configuration:
     # Concurrent jobs / proxies (per request).
     if data.get('max_concurrent'):
         config.parser.max_concurrent = max(1, int(data['max_concurrent']))
-    if data.get('proxies'):
-        config.parser.proxies = [p.strip() for p in data['proxies'] if p and p.strip()]
-    if data.get('proxy_mode'):
-        config.parser.proxy_mode = str(data['proxy_mode'])
 
     adv = data.get('advanced', {}) or {}
     if adv:

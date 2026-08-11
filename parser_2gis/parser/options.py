@@ -35,5 +35,4 @@ class ParserOptions(BaseModel):
     use_gc: bool = False
     gc_pages_interval: PositiveInt = 10
     max_concurrent: PositiveInt = 3
-    proxies: List[str] = []
     proxy_mode: str = 'round_robin'

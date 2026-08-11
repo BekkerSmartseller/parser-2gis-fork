@@ -23,22 +23,6 @@ _proxy_index = -1
 _proxy_index_lock = threading.Lock()
 
 
-def _pick_proxy(config: Configuration) -> Optional[str]:
-    """Rotate a proxy from config.parser.proxies for a single job.
-
-    Returns None if no proxies configured. Proxies are assigned round-robin so
-    that concurrent jobs spread evenly across the list (each job gets one proxy;
-    rotation happens only between tasks).
-    """
-    proxies = list(config.parser.proxies or [])
-    if not proxies:
-        return None
-    global _proxy_index
-    with _proxy_index_lock:
-        _proxy_index += 1
-        return proxies[_proxy_index % len(proxies)]
-
-
 class CollectorWriter(FileWriter):
     """In-memory writer: collects raw catalog documents (no file output).
 
@@ -93,8 +77,6 @@ class ParseJob:
         self.logs: list[str] = []
         self.error: Optional[str] = None
         self.collector: Optional[CollectorWriter] = None
-        # Each concurrent Chrome uses its own rotated proxy.
-        config.chrome.proxy = _pick_proxy(config)
 
     @property
     def running(self) -> bool:
