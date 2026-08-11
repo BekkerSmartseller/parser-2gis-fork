@@ -117,6 +117,8 @@ def _static_dir() -> Path:
 def create_app():
     """Create the Litestar app for the dashboard."""
     from litestar import Litestar, delete, get, post
+    from litestar.openapi.spec import Example
+    from litestar.params import Body
     from litestar.response import File, Response
     from litestar.static_files.config import StaticFilesConfig
 
@@ -135,7 +137,7 @@ def create_app():
                         media_type='text/html')
 
     @post('/api/start', sync_to_thread=True, summary='Запустить парсинг', description='Body: {urls, max_records, max_concurrent, headless, clean, filters, advanced}. Возвращает job_id')
-    def api_start(data: dict[str, Any] | None = None) -> Any:
+    def api_start(data: dict[str, Any] | None = Body(title='Параметры', description='JSON парсинга', examples=[Example(value={'urls':['https://2gis.ru/kazan/search/Fitness'],'max_records':100,'max_concurrent':3})])) -> Any:
         data = data or {}
         urls = [u.strip() for u in (data.get('urls') or []) if u and u.strip()]
         if not urls:
@@ -152,7 +154,7 @@ def create_app():
         return {'ok': True, 'job_id': job_id}
 
     @post('/api/stop', sync_to_thread=True, summary='Остановить задачу', description='job_id в теле')
-    def api_stop(data: dict[str, Any] | None = None) -> Any:
+    def api_stop(data: dict[str, Any] | None = Body(description='job_id', examples=[Example(value={'job_id':'ab12cd34ef56'})])) -> Any:
         data = data or {}
         job_id = data.get('job_id') or None
         if job_id and job_id not in jobs._jobs:
@@ -160,7 +162,7 @@ def create_app():
         return {'ok': jobs.stop(job_id)}
 
     @post('/api/clear', sync_to_thread=True, summary='Очистить задачу', description='job_id в теле')
-    def api_clear(data: dict[str, Any] | None = None) -> Any:
+    def api_clear(data: dict[str, Any] | None = Body(description='job_id', examples=[Example(value={'job_id':'ab12cd34ef56'})])) -> Any:
         data = data or {}
         job_id = data.get('job_id') or None
         return {'ok': jobs.clear(job_id)}
@@ -246,7 +248,7 @@ def create_app():
             return _err(str(e), 500)
 
     @post('/api/history/merge', sync_to_thread=True, summary='Объединить парсинги', description='ids в теле')
-    def api_history_merge(data: dict[str, Any] | None = None) -> Any:
+    def api_history_merge(data: dict[str, Any] | None = Body(description='ids', examples=[Example(value={'ids':['20260811-160924-376519']})])) -> Any:
         data = data or {}
         ids = [str(i) for i in (data.get('ids') or [])]
         if not ids:
