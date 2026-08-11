@@ -214,7 +214,7 @@
   }
 </style>
 </head>
-<body><div style='display:none'><input id='maxconc' value='3'><textarea id='proxies'></textarea></div>
+<body>
 <div class="app">
   <aside>
     <div class="brand"><div class="logo">2G</div><h1>Parser 2GIS</h1>
@@ -922,6 +922,7 @@ localStorage.setItem('lang',LANG);}catch(_){}
   })();
 })();
 </script>
+<div class='group' style='margin-top:4px'><label class='h' for='maxconc'>Параллельных задач (max concurrent)</label><input id='maxconc' type='number' min='1' value='3'><label class='h' for='proxies'>Прокси (по одному на строку, ротация между задачами)</label><textarea id='proxies' placeholder='user:pass@host:port или socks5://host:port' style='min-height:88px'></textarea><p class='hint'>Прокси применяются к параллельным задачам (каждый job - свой прокси).</p></div>
 </body>
 </html>try{var _m=localStorage.getItem('maxconc');if(_m!==null&&$('maxconc'))$('maxconc').value=_m;}catch(e){}
 try{var _p=localStorage.getItem('proxies');if(_p!==null&&$('proxies'))$('proxies').value=_p;}catch(e){}
