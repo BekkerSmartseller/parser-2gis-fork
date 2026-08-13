@@ -72,14 +72,15 @@ class ChromeRemote:
 
     def _create_tab(self) -> pychrome.Tab:
         """Create Chrome Tab."""
-        resp = httpx.put('%s/json/new' % (self._dev_url))         
+        # Локальный CDP-интерфейс — прокси не нужен и вреден (trust_env=False).
+        resp = httpx.put('%s/json/new' % (self._dev_url), trust_env=False)
         return pychrome.Tab(**resp.json())
 
     def _close_tab(self, tab: pychrome.Tab) -> None:
         """Close Chrome Tab."""
         if tab.status == pychrome.Tab.status_started:
             tab.stop()
-        httpx.put('%s/json/close/%s' % (self._dev_url, tab.id))
+        httpx.put('%s/json/close/%s' % (self._dev_url, tab.id), trust_env=False)
 
     def _setup_tab(self) -> None:
         """Hide webdriver, enable requests/response interception, fix UA."""
@@ -211,7 +212,7 @@ class ChromeRemote:
             and check if our tab is still alive."""
             while not self._chrome_tab._stopped.is_set():
                 try:
-                    ret = httpx.get('%s/json' % self._dev_url)
+                    ret = httpx.get('%s/json' % self._dev_url, trust_env=False)
                     if not any(x['id'] == self._chrome_tab.id for x in ret.json()):
                         nonlocal tab_detached
                         tab_detached = True

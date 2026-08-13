@@ -120,6 +120,41 @@ def usable_attributes(catalog_item: CatalogItem) -> str:
     return '; '.join(attributes)
 
 
+_DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+
+
+def _schedule_to_dict(schedule) -> Optional[dict]:
+    """Расписание в JSON-совместимый вид: {day: [{"from", "to"}], ...} + meta."""
+    if schedule is None:
+        return None
+    days = {}
+    for day in _DAYS:
+        day_value = getattr(schedule, day, None)
+        if not day_value or not day_value.working_hours:
+            continue
+        days[day] = [
+            {'from': wh.from_, 'to': wh.to} for wh in day_value.working_hours
+        ]
+    meta = {}
+    for key in ('is_24x7', 'description', 'comment', 'date_from', 'date_to'):
+        val = getattr(schedule, key, None)
+        if val is not None:
+            meta[key] = val
+    if not days and not meta:
+        return None
+    return {**meta, 'days': days}
+
+
+def _schedule_comment(catalog_item: CatalogItem) -> Optional[str]:
+    """Комментарий к расписанию (основное расписание или первая группа)."""
+    for schedule in (catalog_item.schedule,
+                     (catalog_item.contact_groups[0].schedule
+                      if catalog_item.contact_groups else None)):
+        if schedule and schedule.comment:
+            return schedule.comment
+    return None
+
+
 def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
     """Extract a flat, presentation-ready record from a Catalog Item document.
 
@@ -260,4 +295,10 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
         'contact_comments': contact_comments,
         'url': catalog_item.url,
         'reviews_url': catalog_item.reviews_url,
+        # Координаты для пространственных запросов (граф/Geo-рекомендации).
+        'point_lat': catalog_item.point.lat if catalog_item.point else None,
+        'point_lon': catalog_item.point.lon if catalog_item.point else None,
+        # Расписание работы (JSONB: {days: {day: [{from,to}]}, comment, ...}).
+        'schedule': _schedule_to_dict(catalog_item.schedule),
+        'schedule_comment': _schedule_comment(catalog_item),
     }

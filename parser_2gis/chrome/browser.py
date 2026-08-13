@@ -45,6 +45,15 @@ class ChromeBrowser():
         if chrome_options.start_maximized:
             self._chrome_cmd.append('--start-maximized')
 
+        if chrome_options.proxy:
+            # Явно заданный прокси (http/socks5://host:port).
+            self._chrome_cmd.append(f'--proxy-server={chrome_options.proxy}')
+        else:
+            # Иначе Chrome подхватывает ALL_PROXY/HTTPS_PROXY из окружения —
+            # при невалидной схеме (socks://) или недоступном прокси это даёт
+            # net::ERR_SOCKS_CONNECTION_FAILED. Запрещаем прокси полностью.
+            self._chrome_cmd.append('--no-proxy-server')
+
         if chrome_options.headless:
             logger.debug('В Chrome установлен в скрытый режим.')
             # Use the "new" headless mode: it renders the WebGL map (mapgl)

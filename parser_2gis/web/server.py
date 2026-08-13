@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from ..config import Configuration
 from ..logger import logger
-from ..paths import data_path
+from ..paths import data_path, user_path
 from ..writer import WriterOptions, get_writer
 from .history import History
 from .job import JobManager
@@ -29,10 +29,93 @@ COUNTRIES = {
 }
 
 
+_TRANSLIT = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+    'ф': 'f', 'х': 'kh', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+    'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+}
+
+
+def _translit_slug(name: str) -> str:
+    """Кириллица -> латинский slug для кода города в URL 2GIS."""
+    s = (name or '').strip().lower().replace('ё', 'e')
+    out = []
+    for ch in s:
+        if ch in _TRANSLIT:
+            out.append(_TRANSLIT[ch])
+        elif ch.isalnum():
+            out.append(ch)
+    return ''.join(out).strip('-_') or name.strip().lower()
+
+
+def _custom_cities_path() -> Path:
+    """Файл пользовательских городов (добавленных через API)."""
+    path = user_path(False) / 'cities_custom.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@lru_cache(maxsize=1)
+def _load_custom_cities() -> list[dict[str, Any]]:
+    p = _custom_cities_path()
+    if not p.exists():
+        return []
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_custom_cities(entries: list[dict[str, Any]]) -> None:
+    p = _custom_cities_path()
+    tmp = p.with_suffix('.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(entries, f, ensure_ascii=False, indent=2)
+    tmp.replace(p)
+    _load_custom_cities.cache_clear()
+    _load_cities.cache_clear()
+
+
+def _add_city(name: str, code: str | None = None, domain: str = 'ru',
+              country_code: str = 'ru') -> dict[str, Any]:
+    """Добавляет город в список (base + custom). Идемпотентно по code."""
+    name = (name or '').strip()
+    if not name:
+        raise ValueError('name required')
+    code = (code or _translit_slug(name)).strip()
+    domain = (domain or 'ru').strip()
+    country_code = (country_code or 'ru').strip()
+
+    # дедуп: уже есть в base или custom?
+    all_cities = _load_cities()
+    for c in all_cities:
+        if c.get('code') == code or c.get('name', '').strip().lower() == name.lower():
+            return dict(c)
+
+    entry = {'name': name, 'code': code, 'domain': domain, 'country_code': country_code}
+    custom = _load_custom_cities()
+    for c in custom:
+        if c.get('code') == code:
+            return dict(c)
+    custom.append(entry)
+    _save_custom_cities(custom)
+    return dict(entry)
+
+
 @lru_cache(maxsize=1)
 def _load_cities() -> list[dict[str, Any]]:
     with open(data_path() / 'cities.json', 'r', encoding='utf-8') as f:
-        return json.load(f)
+        base = json.load(f)
+    # добавляем пользовательские города (без дублей по code)
+    seen = {c.get('code') for c in base if c.get('code')}
+    for c in _load_custom_cities():
+        if c.get('code') and c['code'] not in seen:
+            base.append(c)
+            seen.add(c['code'])
+    return base
 
 
 @lru_cache(maxsize=1)
@@ -207,6 +290,32 @@ def create_app():
         countries.sort(key=lambda c: c['name'])
         return {'countries': countries, 'cities': cities, 'rubrics': _load_rubrics()}
 
+    @post('/api/cities', sync_to_thread=True, summary='Добавить город',
+          description='Добавляет город в справочник (если отсутствует). '
+                      'Тело: {"name": "...", "code"?: "...", "domain"?: "ru", '
+                      '"country_code"?: "ru"}. Идемпотентно — по code/имени.')
+    def api_add_city(data: dict[str, Any] | None = Body(description='city',
+                     examples=[Example(value={'name': 'Шарья', 'code': 'sharya'})])) -> Any:
+        data = data or {}
+        try:
+            city = _add_city(
+                name=str(data.get('name') or ''),
+                code=str(data.get('code') or '').strip() or None,
+                domain=str(data.get('domain') or 'ru'),
+                country_code=str(data.get('country_code') or 'ru'),
+            )
+        except ValueError as e:
+            return _err(str(e), 400)
+        return {'ok': True, 'city': city}
+
+    @get('/api/cities', sync_to_thread=True, summary='Список городов', description='base + добавленные')
+    def api_cities() -> Any:
+        return {'cities': [
+            {'name': c['name'], 'code': c['code'], 'domain': c['domain'],
+             'country_code': c['country_code']}
+            for c in _load_cities()
+        ]}
+
     @get('/api/download', sync_to_thread=True, summary='Скачать результат', description='format, job_id')
     def api_download(format: str = 'csv', job_id: str | None = None) -> Any:
         if format not in _DOWNLOAD_NAMES:
@@ -274,6 +383,8 @@ def create_app():
             api_status,
             api_results,
             api_generator,
+            api_add_city,
+            api_cities,
             api_download,
             api_history,
             api_history_results,

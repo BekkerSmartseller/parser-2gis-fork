@@ -183,7 +183,9 @@ Content-Type: application/json
 | GET | `/api/download?format=csv&job_id=ID` | Скачать результат: `csv`, `xlsx`, `json`, `html` |
 | POST | `/api/stop` | Остановить задачу (тело `{"job_id": ID}`) |
 | POST | `/api/clear` | Очистить результат (тело `{"job_id": ID}`) |
-| GET | `/api/generator` | Данные для конструктора ссылок: `{countries, cities, rubrics}` |
+| GET | `/api/generator` | Данные для конструктора ссылок: `{countries, cities, rubrics}` (города = base + добавленные) |
+| POST | `/api/cities` | **Добавить город** в справочник, если отсутствует. Тело: `{"name": "Шарья", "code"?: "sharya", "domain"?: "ru", "country_code"?: "ru"}`. `code` необязателен — генерируется транслитом. Идемпотентно по `code`/имени. Ответ: `{"ok": true, "city": {name, code, domain, country_code}}` |
+| GET | `/api/cities` | Список городов (базовый справочник + добавленные через API) |
 | GET | `/api/history` | Сохранённые парсинги: `{items: [{id, created_at, urls, count}]}` |
 | GET | `/api/history/HID/results` | Записи из истории |
 | GET | `/api/history/HID/download?format=csv` | Скачать из истории |
@@ -222,3 +224,23 @@ curl "http://127.0.0.1:8666/api/download?format=csv&job_id=a1b2c3d4e5f6" -o resu
   https://github.com/interlark/parser-2gis
 - Лицензия: **GNU LGPLv3** (см. [LICENSE](LICENSE)) — сохранена без изменений.
 - Модификации в этом форке распространяются на тех же условиях LGPLv3.
+
+
+---
+
+## 🏙 Добавление городов (расширение справочника)
+
+По умолчанию список городов берётся из `parser_2gis/data/cities.json`. Если нужного города там нет
+(например небольшой город вроде Шарьи), его можно добавить через API — город будет сохранён в
+`~/.local/share/parser-2gis/cities_custom.json` и попадёт в выдачу `/api/generator` и `/api/cities`.
+
+```bash
+# код города необязателен — будет сгенерирован транслитом (Шарья -> sharya)
+curl -X POST http://127.0.0.1:8666/api/cities \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Шарья", "code": "sharya", "domain": "ru"}'
+# -> {"ok": true, "city": {"name": "Шарья", "code": "sharya", "domain": "ru", "country_code": "ru"}}
+```
+
+- Идемпотентно: повторный вызов с тем же `code` или именем вернёт существующий город без дублей.
+- После добавления город сразу доступен в `/api/generator` (конструктор ссылок и интеграции).

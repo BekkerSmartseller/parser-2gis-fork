@@ -52,8 +52,13 @@ class MainParser:
 
     @staticmethod
     def url_pattern():
-        """URL pattern for the parser."""
-        return r'https?://2gis\.[^/]+/[^/]+/search/.*'
+        """URL pattern for the parser.
+
+        Принимает и городской, и координатный (без города) поиск:
+          https://2gis.ru/sharya/search/...            (город)
+          https://2gis.ru/search/фитнес?m=lon,lat/zoom  (пространственный)
+        """
+        return r'https?://2gis\.[^/]+(?:/[^/]+)?/search/.*'
 
     @wait_until_finished(timeout=5, throw_exception=False)
     def _get_links(self) -> list[DOMNode]:
@@ -169,8 +174,29 @@ class MainParser:
         assert document_response['mimeType'] == 'text/html'
         if document_response['status'] == 404:
             logger.warn('Сервер вернул сообщение "Точных совпадений нет / Не найдено".')
+            # Fallback: в городах, где рубрика отсутствует, маршрут /rubricId/ даёт 404,
+            # хотя обычный текстовый поиск по тому же термину находит организации.
+            fallback_url = re.sub(r'/rubricId/[^/]+', '', url, flags=re.I)
+            if fallback_url != url:
+                logger.info('404, повторный поиск без рубрики: %s', fallback_url)
+                # Сбрасываем буфер ответов: navigate() его не очищает, поэтому
+                # get_responses() вернул бы старый 404 и ретрай ложно провалился.
+                self._chrome_remote.clear_requests()
+                self._chrome_remote.navigate(
+                    fallback_url, referer='https://google.com', timeout=120)
+                retry_responses = self._chrome_remote.get_responses(timeout=5)
+                retry_doc = next(
+                    (r for r in retry_responses
+                     if r.get('mimeType') == 'text/html' and r.get('status') != 404),
+                    None)
+                if retry_doc:
+                    document_response = retry_doc
+                    url = fallback_url
+                    logger.info('Ретрай успешен, парсинг продолжается.')
+                else:
+                    logger.warn('Ретрай без рубрики тоже вернул 404.')
 
-            if self._options.skip_404_response:
+            if self._options.skip_404_response and document_response['status'] == 404:
                 return
 
         # Parsed records
