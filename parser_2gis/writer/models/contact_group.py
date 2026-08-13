@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from .schedule import Schedule
 
@@ -30,10 +30,14 @@ class Contact(BaseModel):
     # * `whatsapp` — Whatsapp
     # * `telegram` — Telegram
     # * `viber` — Viber
-    type: str
+    # type/value могут отсутствовать в аномальных записях — делаем optional,
+    # чтобы одна битая контактная группа не роняла всю запись (extract_record
+    # пропускает контакты без type/value).
+    type: str = ''
+    value: str = ''
 
     # Техническое значение контакта (например "Телефон в международном формате")
-    value: str
+    # (value выше)
 
     # Значение контакта для вывода на экран (например "e-mail Иванова")
     text: Optional[str] = None
@@ -50,7 +54,7 @@ class Contact(BaseModel):
 
 class ContactGroup(BaseModel):
     # Список контактов
-    contacts: List[Contact]
+    contacts: List[Contact] = []
 
     # Расписание группы контактов
     schedule: Optional[Schedule] = None
@@ -60,3 +64,13 @@ class ContactGroup(BaseModel):
 
     # Имя группы контактов (например "Сервисный центр")
     name: Optional[str] = None
+
+    @field_validator('contacts', mode='before')
+    @classmethod
+    def _coerce_contacts(cls, v):
+        # 2GIS иногда отдаёт контакты одним объектом вместо списка — приводим к списку.
+        if isinstance(v, dict):
+            return [v]
+        if isinstance(v, list):
+            return v
+        return []

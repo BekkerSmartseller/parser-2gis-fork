@@ -137,6 +137,9 @@ def parse_arguments() -> tuple[argparse.Namespace, Configuration]:
     rest_parser = arg_parser.add_argument_group('Служебные аргументы')
     rest_parser.add_argument('--web', action='store_true', default=False, help='Запустить веб-интерфейс в браузере')
     rest_parser.add_argument('--web-port', metavar='PORT', type=int, default=8666, help='Порт веб-интерфейса (по умолчанию 8666)')
+    rest_parser.add_argument('--web-host', metavar='HOST', default='127.0.0.1', help='Адрес веб-интерфейса (по умолчанию 127.0.0.1)')
+    rest_parser.add_argument('--web-no-browser', action='store_true', default=False,
+                             help='Серверный режим: не открывать браузер автоматически')
     rest_parser.add_argument('-v', '--version', action='version', version=f'%(prog)s {version}', help='Показать версию программы и выйти')
     rest_parser.add_argument('-h', '--help', action='help', help='Показать эту справку и выйти')
 
@@ -170,4 +173,6 @@ def main() -> None:
         return
 
     from .web import run_server
-    run_server(port=getattr(args, 'web_port', 8666))
+    run_server(host=getattr(args, 'web_host', '127.0.0.1'),
+               port=getattr(args, 'web_port', 8666),
+               open_browser=not getattr(args, 'web_no_browser', False))

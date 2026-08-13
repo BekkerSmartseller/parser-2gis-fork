@@ -123,6 +123,22 @@ def _load_rubrics() -> list[dict[str, Any]]:
     """Flat list of rubrics for the web generator picker."""
     with open(data_path() / 'rubrics.json', 'r', encoding='utf-8') as f:
         rubrics = json.load(f)
+
+    def top_group(node: dict[str, Any]) -> str:
+        """Верхнеуровневая рубрика-группа (parentCode '0'), которой принадлежит node."""
+        cur = node
+        seen: set[str] = set()
+        while cur:
+            code = str(cur.get('code') or '')
+            parent = str(cur.get('parentCode') or '0')
+            if parent == '0':
+                return cur.get('label') or ''
+            if code in seen:
+                break
+            seen.add(code)
+            cur = rubrics.get(parent)
+        return node.get('label') or ''
+
     out = []
     for node in rubrics.values():
         # Skip the synthetic root and group headers without a usable label.
@@ -133,6 +149,7 @@ def _load_rubrics() -> list[dict[str, Any]]:
             'label': node['label'],
             'is_russian': bool(node.get('isRussian', True)),
             'is_non_russian': bool(node.get('isNonRussian', True)),
+            'group': top_group(node),
         })
     out.sort(key=lambda r: r['label'].lower())
     return out
