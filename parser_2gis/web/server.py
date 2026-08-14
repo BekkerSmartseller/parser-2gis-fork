@@ -279,6 +279,42 @@ def create_app():
             return _err('2GIS не нашёл адрес (нет точных совпадений)', 404)
         return {'ok': True, **point}
 
+    @post('/api/route', sync_to_thread=True, summary='Построить маршрут через 2GIS',
+          description='Body: {from_lat, from_lon, to_lat, to_lon, transport_mode, city}. '
+                      'transport_mode: car/transit/walk/bike. Открывает страницу directions '
+                      '2GIS в Chrome, перехватывает routing API и возвращает маршрут '
+                      '(distance_m, duration_s, points, segments). Если 2GIS не смог — '
+                      'код 404, вызывающий фолбэчится на MOTIS.')
+    def api_route(data: dict[str, Any] | None = Body(
+        description='from/to/transport_mode/city',
+        examples=[Example(value={'from_lat': 54.744773, 'from_lon': 20.440176,
+                                 'to_lat': 54.731812, 'to_lon': 20.500849,
+                                 'transport_mode': 'car', 'city': 'kaliningrad'})])) -> Any:
+        data = data or {}
+        try:
+            from_lat = float(data.get('from_lat'))
+            from_lon = float(data.get('from_lon'))
+            to_lat = float(data.get('to_lat'))
+            to_lon = float(data.get('to_lon'))
+        except (TypeError, ValueError):
+            return _err('from_lat/from_lon/to_lat/to_lon обязательны (числа)')
+        transport_mode = str(data.get('transport_mode') or 'car').strip().lower()
+        city = str(data.get('city') or '').strip() or None
+        try:
+            from ..parser.router import RouteBuilder
+            cfg = Configuration()
+            cfg.chrome.headless = True
+            with RouteBuilder(cfg.chrome) as builder:
+                route = builder.build(
+                    from_lat, from_lon, to_lat, to_lon,
+                    transport_mode=transport_mode, city=city, timeout=60)
+        except Exception as e:
+            logger.error('Ошибка маршрута: %s', e)
+            return _err(str(e), 500)
+        if not route:
+            return _err('2GIS не построил маршрут (нет данных/недоступен)', 404)
+        return {'ok': True, **route}
+
     @post('/api/stop', sync_to_thread=True, summary='Остановить задачу', description='job_id в теле')
     def api_stop(data: dict[str, Any] | None = Body(description='job_id', examples=[Example(value={'job_id':'ab12cd34ef56'})])) -> Any:
         data = data or {}
@@ -434,6 +470,7 @@ def create_app():
             api_history_merge,
             api_history_delete,
             api_geocode,
+            api_route,
         ],
         static_files_config=[StaticFilesConfig(path='/static', directories=[str(static_dir)])],
     )

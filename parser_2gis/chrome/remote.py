@@ -291,7 +291,13 @@ class ChromeRemote:
             response_data = self._chrome_tab.call_method('Network.getResponseBody',
                                                          requestId=request_id)
             if response_data['base64Encoded']:
-                response_data['body'] = base64.b64decode(response_data['body']).decode('utf-8')
+                raw = base64.b64decode(response_data['body'])
+                # тело может быть сжато (brotli/gzip) — пробуем декодировать,
+                # иначе возвращаем сырые байты как есть (вызывающий сам разберётся)
+                try:
+                    response_data['body'] = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    response_data['body'] = raw.decode('utf-8', errors='replace')
 
             response_body = response_data['body']
             response['body'] = response_body
