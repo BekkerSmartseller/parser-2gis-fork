@@ -254,6 +254,31 @@ def create_app():
             return _err(str(e))
         return {'ok': True, 'job_id': job_id}
 
+    @post('/api/geocode', sync_to_thread=True, summary='Геокодинг адреса через 2GIS',
+          description='Body: {query, city}. Открывает поиск 2GIS по адресу в Chrome, '
+                      'перехватывает XHR к catalog.api.2gis.ru и возвращает координаты '
+                      'первого подходящего результата. Fallback, когда MOTIS/OSM не знает адрес.')
+    def api_geocode(data: dict[str, Any] | None = Body(
+        description='query/city', examples=[Example(value={'query': 'Пограничный проезд 766 СНТ Янтарь',
+                                                           'city': 'Калининград'})])) -> Any:
+        data = data or {}
+        query = str(data.get('query') or '').strip()
+        if not query:
+            return _err('query обязателен')
+        city = str(data.get('city') or '').strip() or None
+        try:
+            from ..parser.geocoder import Geocoder
+            cfg = Configuration()
+            cfg.chrome.headless = True
+            with Geocoder(cfg.chrome) as geocoder:
+                point = geocoder.geocode(query, city=city, timeout=45)
+        except Exception as e:
+            logger.error('Ошибка геокодинга: %s', e)
+            return _err(str(e), 500)
+        if not point:
+            return _err('2GIS не нашёл адрес (нет точных совпадений)', 404)
+        return {'ok': True, **point}
+
     @post('/api/stop', sync_to_thread=True, summary='Остановить задачу', description='job_id в теле')
     def api_stop(data: dict[str, Any] | None = Body(description='job_id', examples=[Example(value={'job_id':'ab12cd34ef56'})])) -> Any:
         data = data or {}
@@ -408,6 +433,7 @@ def create_app():
             api_history_download,
             api_history_merge,
             api_history_delete,
+            api_geocode,
         ],
         static_files_config=[StaticFilesConfig(path='/static', directories=[str(static_dir)])],
     )
