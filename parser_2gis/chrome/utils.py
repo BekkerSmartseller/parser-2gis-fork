@@ -82,7 +82,8 @@ def locate_chrome_path() -> str | None:
         # We also could use 'which' to locate Chrome executable
         for f in browser_executables:
             try:
-                ret_output = subprocess.check_output(['which', f])
+                ret_output = subprocess.check_output(
+                    ['which', f], stderr=subprocess.DEVNULL)
                 binary_path = ret_output.decode('utf-8').strip()
                 if os.path.isfile(binary_path):
                     return binary_path

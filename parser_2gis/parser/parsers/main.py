@@ -307,5 +307,5 @@ class MainParser:
     def __repr__(self) -> str:
         classname = self.__class__.__name__
         return (f'{classname}(parser_options={self._options!r}, '
-                'chrome_remote={self._chrome_remote!r}, '
-                'url={self._url!r}')
+                f'chrome_remote={self._chrome_remote!r}, '
+                f'url={self._url!r})')

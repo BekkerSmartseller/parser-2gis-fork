@@ -218,7 +218,10 @@ class ChromeRemote:
                         tab_detached = True
                         self._chrome_tab._stopped.set()
 
-                    self._chrome_tab._stopped.wait(0.5)
+                    # Пауза между пингами 5с (не 0.5с): монитор — это health-check,
+                    # а не живая очередь; частый пинг спамит лог запросами GET /json.
+                    # При stop() событие _stopped ставится сразу — поток выходит мгновенно.
+                    self._chrome_tab._stopped.wait(5.0)
                 except httpx.ConnectError:
                     break
 
@@ -274,10 +277,25 @@ class ChromeRemote:
         except queue.Empty:
             return None
 
+    def poll_response(self, response_pattern: str, timeout: float = 1.0) -> Response | None:
+        """Короткий опрос очереди ответов с точным таймаутом (без wait_until_finished).
+
+        Нужен для циклов с внешним deadline (_wait_route): wait_response блокирует
+        до 30с на вызов и «переезжает» дедлайн."""
+        try:
+            if self._chrome_tab._stopped.is_set():
+                raise pychrome.RuntimeException('Tab has been stopped')
+            return self._response_queues[response_pattern].get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     def clear_requests(self) -> None:
         """Clear all collected responses."""
-        with self._requests_lock:
-            self._requests = {}
+        try:
+            with self._requests_lock:
+                self._requests = {}
+        except AttributeError:
+            pass
 
     @wait_until_finished(timeout=15, throw_exception=False)
     def get_response_body(self, response: Response) -> str:
@@ -384,18 +402,37 @@ class ChromeRemote:
 
     def stop(self) -> None:
         """Close browser, disconnect interface."""
-        # Close tab and browser
-        if self._chrome_tab:
-            try:
-                self._close_tab(self._chrome_tab)
-            except (pychrome.RuntimeException, RequestException):
-                pass
+        # Останавливаем монитор вкладки: пингует GET /json каждые 0.5с, пока
+        # живёт вкладка. Если не остановить — после geocode/route остаются
+        # фоновые потоки с бесконечными запросами к devtools (утечка).
+        try:
+            tab = getattr(self, '_chrome_tab', None)
+            if tab is not None:
+                tab.stop()
+        except Exception:  # noqa: BLE001
+            pass
 
-        if self._chrome_browser:
-            self._chrome_browser.close()
+        # Close tab and browser
+        try:
+            tab = getattr(self, '_chrome_tab', None)
+            if tab is not None:
+                self._close_tab(tab)
+        except (pychrome.RuntimeException, httpx.HTTPError):
+            pass
+
+        try:
+            if getattr(self, '_chrome_browser', None):
+                self._chrome_browser.close()
+        except Exception:  # noqa: BLE001
+            pass
 
         self.clear_requests()
         self._response_queues = {}
+
+    def close(self) -> None:
+        """Alias for `stop()`: полное закрытие вкладки/браузера и остановка
+        фонового монитора (должен вызываться из __exit__ контекст-менеджеров)."""
+        self.stop()
 
     def __enter__(self) -> ChromeRemote:
         self.start()
