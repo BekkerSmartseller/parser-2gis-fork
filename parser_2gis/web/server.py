@@ -3,14 +3,19 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import urllib.parse
 import webbrowser
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
+
+from litestar.openapi.controller import OpenAPIController
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import Configuration
 from ..logger import logger
 from ..paths import data_path, user_path
+from ..version import version
 from ..writer import WriterOptions, get_writer
 from .history import History
 from .job import JobManager
@@ -38,6 +43,45 @@ _TRANSLIT = {
 }
 
 
+def _os_proxy() -> Optional[str]:
+    """Прокси из переменных окружения ОС для Chrome (без авторизации).
+
+    Chrome не умеет креды в `--proxy-server` (URL вида
+    `http://user:pass@host:port` даёт net::ERR_NO_SUPPORTED_PROXIES, без
+    кредов — ERR_INVALID_AUTH_CREDENTIALS). Поэтому прокси с логином/паролем
+    пропускаем — Chrome пойдёт напрямую (прямое подключение к 2GIS работает,
+    а парсер и так обходит анти-бот). Схему socks:// нормализуем в socks5://
+    (иначе Chrome падает с ERR_SOCKS_CONNECTION_FAILED).
+    """
+    for name in ('https_proxy', 'http_proxy', 'HTTPS_PROXY', 'HTTP_PROXY',
+                 'ALL_PROXY', 'all_proxy'):
+        val = os.environ.get(name)
+        if not val or not val.strip():
+            continue
+        val = val.strip()
+        if val.lower().startswith('socks://'):
+            val = 'socks5://' + val[len('socks://'):]
+        try:
+            parsed = urllib.parse.urlsplit(val)
+        except ValueError:
+            continue
+        if parsed.username or parsed.password:
+            # Chrome не поддерживает авторизацию прокси — не пробрасываем.
+            continue
+        return val
+    return None
+
+
+def _configure_chrome(cfg: Configuration) -> None:
+    """Настраивает Chrome для серверных вызовов (geocode/route).
+
+    Headless + системный прокси, если его можно отдать Chrome (без кредов)."""
+    proxy = _os_proxy()
+    if proxy:
+        cfg.chrome.proxy = proxy
+    cfg.chrome.headless = True
+
+
 def _translit_slug(name: str) -> str:
     """Кириллица -> латинский slug для кода города в URL 2GIS."""
     s = (name or '').strip().lower().replace('ё', 'e')
@@ -48,6 +92,213 @@ def _translit_slug(name: str) -> str:
         elif ch.isalnum():
             out.append(ch)
     return ''.join(out).strip('-_') or name.strip().lower()
+
+
+class GeocodeRequest(BaseModel):
+    """Тело POST /api/geocode: адрес для поиска в 2GIS."""
+    model_config = ConfigDict(extra='ignore')
+
+    query: str = Field(description='Адрес или запрос (например «Московский проспект 273»)',
+                       examples=['Московский проспект 273'])
+    city: Optional[str] = Field(default=None,
+                                description='Город-контекст (добавляется в slug URL, например «Калининград»)',
+                                examples=['Калининград'])
+    lat: Optional[float] = Field(default=None, description='Широта города-якоря (резерв)')
+    lon: Optional[float] = Field(default=None, description='Долгота города-якоря (резерв)')
+
+
+class RouteRequest(BaseModel):
+    """Тело POST /api/route: точки маршрута и режим транспорта."""
+    model_config = ConfigDict(extra='ignore')
+
+    from_lat: float = Field(description='Широта точки А', examples=[54.71])
+    from_lon: float = Field(description='Долгота точки А', examples=[20.51])
+    to_lat: float = Field(description='Широта точки Б', examples=[54.72])
+    to_lon: float = Field(description='Долгота точки Б', examples=[20.53])
+    transport_mode: str = Field(default='car',
+                                description='Режим: car / transit / walk / bike',
+                                examples=['transit'])
+    city: Optional[str] = Field(default=None,
+                                description='Город (кириллица или латинский slug), например «kaliningrad»',
+                                examples=['kaliningrad'])
+    from_id: Optional[str] = Field(default=None,
+                                   description='ID точки А в 2GIS (из /api/geocode) — точная привязка',
+                                   examples=['111222333444'])
+    to_id: Optional[str] = Field(default=None,
+                                 description='ID точки Б в 2GIS (из /api/geocode) — точная привязка',
+                                 examples=['555666777888'])
+
+
+# --- Модели запросов POST ---
+
+class FilterOptions(BaseModel):
+    """Фильтры результата (секция `filters` в POST /api/start)."""
+    model_config = ConfigDict(extra='ignore')
+
+    dedup_franchises: bool = Field(default=False, description='Убирать дубли франшиз (сеть показывать один раз)')
+    dedup_across_niches: bool = Field(default=True, description='Убирать дубли между нишами')
+    require_phone: bool = Field(default=False, description='Оставлять только организации с телефоном')
+    require_whatsapp: bool = Field(default=False, description='Оставлять только с WhatsApp')
+    require_social: bool = Field(default=False, description='Оставлять только с соцсетями')
+    require_email: bool = Field(default=False, description='Оставлять только с e-mail')
+    require_website: bool = Field(default=False, description='Оставлять только с сайтом')
+    min_rating: float = Field(default=0.0, ge=0, le=5,
+                              description='Минимальный рейтинг (0–5)')
+    min_reviews: int = Field(default=0, ge=0,
+                             description='Минимальное количество отзывов')
+
+
+class AdvancedOptions(BaseModel):
+    """Расширенные настройки (секция `advanced` в POST /api/start)."""
+    model_config = ConfigDict(extra='ignore')
+
+    disable_images: Optional[bool] = Field(default=None, description='Не загружать изображения (быстрее)')
+    start_maximized: Optional[bool] = Field(default=None, description='Запускать Chrome развёрнутым')
+    memory_limit: Optional[int] = Field(default=None, gt=0,
+                                        description='Лимит памяти Chrome, МБ')
+    skip_404_response: Optional[bool] = Field(default=None, description='Пропускать ответы 404 2GIS')
+    delay_between_clicks: Optional[int] = Field(default=None, ge=0,
+                                                description='Пауза между кликами по позициям, мс')
+    add_rubrics: Optional[bool] = Field(default=None, description='Добавлять рубрики в CSV')
+    add_comments: Optional[bool] = Field(default=None, description='Добавлять комментарии в CSV')
+    remove_empty_columns: Optional[bool] = Field(default=None, description='Убирать пустые колонки')
+    remove_duplicates: Optional[bool] = Field(default=None, description='Убирать дубли строк')
+    columns_per_entity: Optional[int] = Field(default=None, ge=1, le=5,
+                                              description='Колонок на сущность (1–5)')
+    encoding: Optional[str] = Field(default=None, description='Кодировка файла (utf-8, cp1251, ...)')
+
+
+class StartRequest(BaseModel):
+    """Тело POST /api/start: запуск парсинга."""
+    model_config = ConfigDict(extra='ignore')
+
+    urls: list[str] = Field(description='Ссылки на 2GIS (поиск или фирма)',
+                            examples=[['https://2gis.ru/kaliningrad/search/фитнес']])
+    max_records: int = Field(default=100, gt=0,
+                             description='Лимит записей (кликов по позициям выдачи)')
+    max_concurrent: Optional[int] = Field(default=None, gt=0,
+                                          description='Сколько Chrome одновременно (если не задано — 3)')
+    headless: bool = Field(default=True, description='Запускать Chrome в фоне (headless)')
+    clean: bool = Field(default=False, description='«Чистый вид» CSV (без пустых колонок)')
+    filters: FilterOptions = Field(default_factory=FilterOptions, description='Фильтры результата')
+    advanced: AdvancedOptions = Field(default_factory=AdvancedOptions, description='Расширенные настройки')
+
+
+class JobIdRequest(BaseModel):
+    """Тело POST /api/stop и /api/clear."""
+    model_config = ConfigDict(extra='ignore')
+
+    job_id: Optional[str] = Field(default=None, description='ID задачи (без него — последняя)',
+                                  examples=['ab12cd34ef56'])
+
+
+class AddCityRequest(BaseModel):
+    """Тело POST /api/cities: добавление города в справочник."""
+    model_config = ConfigDict(extra='ignore')
+
+    name: str = Field(description='Название города', examples=['Шарья'])
+    code: Optional[str] = Field(default=None,
+                                description='Код города (латиница) — без него генерируется транслитом',
+                                examples=['sharya'])
+    domain: str = Field(default='ru', description='Домен страны (ru, kz, by, ...)')
+    country_code: str = Field(default='ru', description='Код страны')
+
+
+class MergeRequest(BaseModel):
+    """Тело POST /api/history/merge: объединение записей истории."""
+    model_config = ConfigDict(extra='ignore')
+
+    ids: list[str] = Field(description='ID записей истории для объединения',
+                           examples=[['20260811-160924-376519', '20260811-161200-123456']])
+
+
+# --- Модели ответов ---
+
+class OkResponse(BaseModel):
+    """Универсальный ответ `{ok: bool}`."""
+    ok: bool = Field(description='Успех операции')
+
+
+class StartOk(BaseModel):
+    ok: bool = Field(description='Всегда true')
+    job_id: str = Field(description='ID запущенной задачи', examples=['ab12cd34ef56'])
+
+
+class MergeOk(BaseModel):
+    ok: bool = Field(description='Всегда true')
+    id: str = Field(description='ID новой объединённой записи',
+                    examples=['20260814-210500-654321'])
+    count: int = Field(description='Количество записей после объединения', examples=[40])
+
+
+class JobInfo(BaseModel):
+    id: str = Field(description='ID задачи', examples=['ab12cd34ef56'])
+    status: str = Field(description='queued | running | done | stopped | error | idle')
+    count: int = Field(description='Собранные записи', examples=[97])
+
+
+class JobsResponse(BaseModel):
+    jobs: list[JobInfo] = Field(description='Список задач')
+
+
+class StatusResponse(BaseModel):
+    job_id: str = Field(description='ID задачи')
+    status: str = Field(description='queued | running | done | stopped | error')
+    running: bool = Field(description='Выполняется ли сейчас')
+    count: int = Field(description='Собранные записи')
+    error: Optional[str] = Field(description='Текст ошибки (если была)')
+    logs: list[str] = Field(description='Журнал задачи (начиная с cursor)')
+    cursor: int = Field(description='Следующий offset для продолжения чтения логов')
+
+
+class ResultsResponse(BaseModel):
+    records: list[dict[str, Any]] = Field(description='Записи результата (динамические колонки)')
+
+
+class CountryInfo(BaseModel):
+    code: str = Field(description='Код страны', examples=['ru'])
+    name: str = Field(description='Название страны', examples=['Россия'])
+
+
+class CityInfo(BaseModel):
+    name: str = Field(description='Название города', examples=['Шарья'])
+    code: str = Field(description='Код города (slug)', examples=['sharya'])
+    domain: str = Field(description='Домен страны', examples=['ru'])
+    country_code: str = Field(description='Код страны', examples=['ru'])
+
+
+class RubricInfo(BaseModel):
+    code: str = Field(description='ID рубрики', examples=['fitness_club'])
+    label: str = Field(description='Название рубрики', examples=['Фитнес-клубы'])
+    is_russian: bool = Field(description='Показывать в российских городах')
+    is_non_russian: bool = Field(description='Показывать в зарубежных городах')
+    group: str = Field(description='Верхнеуровневая рубрика-группа', examples=['Спорт'])
+
+
+class GeneratorResponse(BaseModel):
+    countries: list[CountryInfo] = Field(description='Страны')
+    cities: list[CityInfo] = Field(description='Города (базовые + добавленные)')
+    rubrics: list[RubricInfo] = Field(description='Рубрики')
+
+
+class CitiesResponse(BaseModel):
+    cities: list[CityInfo] = Field(description='Города (базовые + добавленные)')
+
+
+class CityAddOk(BaseModel):
+    ok: bool = Field(description='Всегда true')
+    city: CityInfo = Field(description='Добавленный/найденный город')
+
+
+class HistoryItem(BaseModel):
+    id: str = Field(description='ID записи', examples=['20260814-210000-123456'])
+    created_at: Optional[str] = Field(description='Дата создания (ISO)')
+    urls: list[str] = Field(description='Ссылки парсинга')
+    count: int = Field(description='Количество записей')
+
+
+class HistoryResponse(BaseModel):
+    items: list[HistoryItem] = Field(description='Записи истории (новые сверху)')
 
 
 def _custom_cities_path() -> Path:
@@ -214,13 +465,24 @@ def _static_dir() -> Path:
     return Path(__file__).with_name('static')
 
 
+class _LocalDocsController(OpenAPIController):
+    """OpenAPI-контроллер с локальным ReDoc-бандлом (без CDN).
+
+    По умолчанию Litestar грузит ReDoc с cdn.redoc.ly, который в этом окружении
+    из браузера недоступен -> страница /schema/redoc пустая. Отдаём
+    redoc.standalone.js из собственного /static и не тянем Google Fonts.
+    """
+    redoc_js_url = '/static/redoc.standalone.js'
+    redoc_google_fonts = False
+
+
 def create_app():
     """Create the Litestar app for the dashboard."""
     from litestar import Litestar, delete, get, post
-    from litestar.openapi import ResponseSpec
+    from litestar.openapi import OpenAPIConfig, ResponseSpec
     from litestar.openapi.spec import Example
-    from litestar.params import Body
-    from litestar.response import File, Response
+    from litestar.params import Body, PathParameter, QueryParameter
+    from litestar.response import Response
     from litestar.static_files.config import StaticFilesConfig
 
     static_dir = _static_dir()
@@ -237,14 +499,36 @@ def create_app():
         return Response(content=(static_dir / 'index.html').read_bytes(),
                         media_type='text/html')
 
-    @post('/api/start', sync_to_thread=True, summary='Запустить парсинг', description='Body: {urls, max_records, max_concurrent, headless, clean, filters, advanced}. Возвращает job_id')
-    def api_start(data: dict[str, Any] | None = Body(title='Параметры', description='JSON парсинга', examples=[Example(value={'urls':['https://2gis.ru/kazan/search/Fitness'],'max_records':100,'max_concurrent':3})])) -> Any:
-        data = data or {}
-        urls = [u.strip() for u in (data.get('urls') or []) if u and u.strip()]
+    @post('/api/start', status_code=200, sync_to_thread=True, summary='Запустить парсинг',
+          description='Запускает фоновый парсинг ссылок 2GIS. '
+                      'urls — ссылки (поиск или фирма); max_records — лимит записей; '
+                      'max_concurrent — сколько Chrome одновременно; filters/advanced — '
+                      'фильтры и расширенные настройки. Ответ: {ok, job_id}. '
+                      'При невалидном/неполном теле — 400, при превышении лимита задач — 409.',
+          responses={
+              200: ResponseSpec(StartOk, description='OK: задача запущена',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True, 'job_id': 'ab12cd34ef56'})]),
+              400: ResponseSpec(dict, description='Невалидное тело/нет ссылок',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': 'Не указаны ссылки'})]),
+              409: ResponseSpec(dict, description='Превышен лимит задач',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+              500: ResponseSpec(dict, description='Ошибка сервера',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+          })
+    def api_start(data: StartRequest = Body(
+        title='Параметры парсинга',
+        description='urls обязателен; остальные параметры опциональны.',
+        examples=[Example(value={'urls': ['https://2gis.ru/kaliningrad/search/фитнес'],
+                                 'max_records': 100, 'max_concurrent': 3})])) -> Any:
+        urls = [u.strip() for u in (data.urls or []) if u and u.strip()]
         if not urls:
             return _err('Не указаны ссылки')
         try:
-            config = _build_config(data)
+            config = _build_config(data.model_dump())
             # Update worker concurrency on the fly from the request's max_concurrent.
             job_id = jobs.start(config, urls)
         except RuntimeError as e:
@@ -254,24 +538,42 @@ def create_app():
             return _err(str(e))
         return {'ok': True, 'job_id': job_id}
 
-    @post('/api/geocode', sync_to_thread=True, summary='Геокодинг адреса через 2GIS',
-          description='Body: {query, city}. Открывает поиск 2GIS по адресу в Chrome, '
-                      'перехватывает XHR к catalog.api.2gis.ru и возвращает координаты '
-                      'первого подходящего результата. Fallback, когда MOTIS/OSM не знает адрес.')
-    def api_geocode(data: dict[str, Any] | None = Body(
-        description='query/city', examples=[Example(value={'query': 'Пограничный проезд 766 СНТ Янтарь',
-                                                           'city': 'Калининград'})])) -> Any:
-        data = data or {}
-        query = str(data.get('query') or '').strip()
-        if not query:
+    @post('/api/geocode', status_code=200, sync_to_thread=True, summary='Геокодинг адреса через 2GIS',
+          description='Открывает поиск 2GIS по адресу (со slug города), перехватывает '
+                      'catalog API (markers/clustered) и возвращает координаты лучшего '
+                      'результата + id объекта 2GIS (для точной привязки точек маршрута). '
+                      'При невалидном/неполном теле — 400.',
+          responses={
+              200: ResponseSpec(dict, description='OK: координаты + id',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': True, 'lat': 54.71, 'lon': 20.51,
+                                    'name': 'Московский проспект, 273',
+                                    'address': None, 'id': '111222333444'})]),
+              404: ResponseSpec(dict, description='Не найдено',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': False,
+                                    'error': '2GIS не нашёл адрес (нет точных совпадений)'})]),
+              500: ResponseSpec(dict, description='Ошибка сервера',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+          })
+    def api_geocode(data: GeocodeRequest = Body(
+        title='Параметры геокодинга',
+        description='query — адрес/запрос; city/lat/lon — контекст города.',
+        examples=[Example(value={'query': 'Московский проспект 273',
+                                 'city': 'Калининград'})])) -> Any:
+        if not (data.query or '').strip():
             return _err('query обязателен')
-        city = str(data.get('city') or '').strip() or None
         try:
             from ..parser.geocoder import Geocoder
             cfg = Configuration()
-            cfg.chrome.headless = True
+            _configure_chrome(cfg)
             with Geocoder(cfg.chrome) as geocoder:
-                point = geocoder.geocode(query, city=city, timeout=45)
+                point = geocoder.geocode(data.query, city=data.city,
+                                         city_lat=data.lat, city_lon=data.lon,
+                                         timeout=45)
         except Exception as e:
             logger.error('Ошибка геокодинга: %s', e)
             return _err(str(e), 500)
@@ -279,35 +581,64 @@ def create_app():
             return _err('2GIS не нашёл адрес (нет точных совпадений)', 404)
         return {'ok': True, **point}
 
-    @post('/api/route', sync_to_thread=True, summary='Построить маршрут через 2GIS',
-          description='Body: {from_lat, from_lon, to_lat, to_lon, transport_mode, city}. '
-                      'transport_mode: car/transit/walk/bike. Открывает страницу directions '
-                      '2GIS в Chrome, перехватывает routing API и возвращает маршрут '
-                      '(distance_m, duration_s, points, segments). Если 2GIS не смог — '
-                      'код 404, вызывающий фолбэчится на MOTIS.')
-    def api_route(data: dict[str, Any] | None = Body(
-        description='from/to/transport_mode/city',
-        examples=[Example(value={'from_lat': 54.744773, 'from_lon': 20.440176,
-                                 'to_lat': 54.731812, 'to_lon': 20.500849,
-                                 'transport_mode': 'car', 'city': 'kaliningrad'})])) -> Any:
-        data = data or {}
-        try:
-            from_lat = float(data.get('from_lat'))
-            from_lon = float(data.get('from_lon'))
-            to_lat = float(data.get('to_lat'))
-            to_lon = float(data.get('to_lon'))
-        except (TypeError, ValueError):
-            return _err('from_lat/from_lon/to_lat/to_lon обязательны (числа)')
-        transport_mode = str(data.get('transport_mode') or 'car').strip().lower()
-        city = str(data.get('city') or '').strip() or None
+    @post('/api/route', status_code=200, sync_to_thread=True, summary='Построить маршрут через 2GIS',
+          description='Открывает страницу directions 2GIS в Chrome и парсит SSR-итинерарий '
+                      '(маршруты 2GIS рендерит на сервере). transport_mode: car/transit/walk/bike. '
+                      'from_id/to_id — ID точек 2GIS из /api/geocode (формат lon,lat;ID, точная '
+                      'привязка). Ответ: mode, duration_s, distance_m, segments, variants. '
+                      'Если 2GIS не смог — код 404. При невалидном/неполном теле — 400.',
+          responses={
+              200: ResponseSpec(dict, description='OK: маршрут',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': True, 'mode': 'transit', 'duration_s': 3660,
+                                    'distance_m': None, 'walk_duration_s': 1380,
+                                    'transfers': 0,
+                                    'segments': [
+                                        {'type': 'walk', 'mode': 'walk', 'route': '',
+                                         'name': 'Пешком', 'duration_s': None,
+                                         'from': '', 'to': ''},
+                                        {'type': 'bus', 'mode': 'bus', 'route': '28',
+                                         'name': 'Автобус: 28', 'duration_s': 960,
+                                         'from': '', 'to': ''},
+                                        {'type': 'walk', 'mode': 'walk', 'route': '',
+                                         'name': 'Пешком', 'duration_s': None,
+                                         'from': '', 'to': ''},
+                                    ],
+                                    'variants': [
+                                        {'mode': 'transit', 'duration_s': 3660,
+                                         'distance_m': None, 'walk_duration_s': 1380,
+                                         'transfers': 0, 'segments': []},
+                                    ]})]),
+              404: ResponseSpec(dict, description='Маршрут не построен',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': False,
+                                    'error': '2GIS не построил маршрут (нет данных/недоступен)'})]),
+              500: ResponseSpec(dict, description='Ошибка сервера',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+          })
+    def api_route(data: RouteRequest = Body(
+        title='Параметры маршрута',
+        description='from_lat/from_lon/to_lat/to_lon — координаты; '
+                    'transport_mode: car/transit/walk/bike; '
+                    'from_id/to_id — ID точек 2GIS из /api/geocode.',
+        examples=[Example(value={'from_lat': 54.71, 'from_lon': 20.51,
+                                 'to_lat': 54.72, 'to_lon': 20.53,
+                                 'transport_mode': 'transit', 'city': 'kaliningrad',
+                                 'from_id': '111222333444',
+                                 'to_id': '555666777888'})])) -> Any:
+        transport_mode = (data.transport_mode or 'car').strip().lower()
         try:
             from ..parser.router import RouteBuilder
             cfg = Configuration()
-            cfg.chrome.headless = True
+            _configure_chrome(cfg)
             with RouteBuilder(cfg.chrome) as builder:
                 route = builder.build(
-                    from_lat, from_lon, to_lat, to_lon,
-                    transport_mode=transport_mode, city=city, timeout=60)
+                    data.from_lat, data.from_lon, data.to_lat, data.to_lon,
+                    transport_mode=transport_mode, city=data.city,
+                    from_id=data.from_id, to_id=data.to_id, timeout=60)
         except Exception as e:
             logger.error('Ошибка маршрута: %s', e)
             return _err(str(e), 500)
@@ -315,26 +646,86 @@ def create_app():
             return _err('2GIS не построил маршрут (нет данных/недоступен)', 404)
         return {'ok': True, **route}
 
-    @post('/api/stop', sync_to_thread=True, summary='Остановить задачу', description='job_id в теле')
-    def api_stop(data: dict[str, Any] | None = Body(description='job_id', examples=[Example(value={'job_id':'ab12cd34ef56'})])) -> Any:
-        data = data or {}
-        job_id = data.get('job_id') or None
-        if job_id and job_id not in jobs._jobs:
+    @post('/api/stop', status_code=200, sync_to_thread=True, summary='Остановить задачу',
+          description='Останавливает задачу (job_id в теле; без job_id — последнюю). '
+                      'При невалидном/неполном теле — 400, если задачи нет — 404.',
+          responses={
+              200: ResponseSpec(OkResponse, description='OK',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True})]),
+              400: ResponseSpec(dict, description='Невалидное тело',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+              404: ResponseSpec(dict, description='Задача не найдена',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': 'Задача не найдена'})]),
+          })
+    def api_stop(
+        data: JobIdRequest = Body(
+            title='Параметры',
+            description='job_id — ID задачи (опционально, без него — последняя).',
+            examples=[Example(value={'job_id': 'ab12cd34ef56'})],
+        ),
+    ) -> Any:
+        if data.job_id and data.job_id not in jobs._jobs:
             return _err('Задача не найдена', 404)
-        return {'ok': jobs.stop(job_id)}
+        return {'ok': jobs.stop(data.job_id)}
 
-    @post('/api/clear', sync_to_thread=True, summary='Очистить задачу', description='job_id в теле')
-    def api_clear(data: dict[str, Any] | None = Body(description='job_id', examples=[Example(value={'job_id':'ab12cd34ef56'})])) -> Any:
-        data = data or {}
-        job_id = data.get('job_id') or None
-        return {'ok': jobs.clear(job_id)}
+    @post('/api/clear', status_code=200, sync_to_thread=True, summary='Очистить задачу',
+          description='Очищает результат задачи (job_id в теле; без job_id — последнюю). '
+                      'При невалидном/неполном теле — 400.',
+          responses={
+              200: ResponseSpec(OkResponse, description='OK',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True})]),
+              400: ResponseSpec(dict, description='Невалидное тело',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+          })
+    def api_clear(
+        data: JobIdRequest = Body(
+            title='Параметры',
+            description='job_id — ID задачи (опционально, без него — последняя).',
+            examples=[Example(value={'job_id': 'ab12cd34ef56'})],
+        ),
+    ) -> Any:
+        return {'ok': jobs.clear(data.job_id)}
 
-    @get('/api/jobs', sync_to_thread=True, summary='Список задач', description='id, status, count', responses={200: ResponseSpec(None, description='OK', media_type='application/json', examples=[Example(value=[{'id': 'ab12cd34ef56', 'status': 'done', 'count': 97}])])})
+    @get('/api/jobs', sync_to_thread=True, summary='Список задач',
+         description='Все задачи с id, статусом и числом записей.',
+         responses={
+             200: ResponseSpec(JobsResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'jobs': [
+                                   {'id': 'ab12cd34ef56', 'status': 'done', 'count': 97},
+                                   {'id': 'cd34ef56ab12', 'status': 'running', 'count': 12},
+                               ]})]),
+         })
     def api_jobs() -> Any:
         return {'jobs': jobs.list_jobs()}
 
-    @get('/api/status', sync_to_thread=True, summary='Статус задачи', description='job_id, cursor. Без job_id - последняя', responses={200: ResponseSpec(None, description='OK', media_type='application/json', examples=[Example(value={'status': 'done', 'running': False, 'count': 97, 'cursor': 0})])})
-    def api_status(cursor: int = 0, job_id: str | None = None) -> Any:
+    @get('/api/status', sync_to_thread=True, summary='Статус задачи',
+         description='Прогресс задачи: статус, записи, журнал с позиции cursor. '
+                     'Без job_id — последняя задача. Если задачи нет — 404.',
+         responses={
+             200: ResponseSpec(StatusResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={
+                                   'job_id': 'ab12cd34ef56', 'status': 'done',
+                                   'running': False, 'count': 97, 'error': None,
+                                   'logs': ['21:00:00 | Парсинг запущен.',
+                                            '21:00:05 | Парсинг завершён.'],
+                                   'cursor': 2})]),
+             404: ResponseSpec(dict, description='Задача не найдена',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={
+                                   'ok': False, 'error': 'Задача не найдена'})]),
+         })
+    def api_status(
+        cursor: Annotated[int, QueryParameter(default=0, description='Offset чтения журнала')] = 0,
+        job_id: Annotated[Optional[str], QueryParameter(
+            default=None, description='ID задачи (без него — последняя)')] = None,
+    ) -> Any:
         job = jobs.get(job_id)
         if not job:
             return _err('Задача не найдена', 404)
@@ -349,14 +740,44 @@ def create_app():
             'cursor': cursor + len(logs),
         }
 
-    @get('/api/results', sync_to_thread=True, summary='Результаты задачи', description='job_id', responses={200: ResponseSpec(None, description='OK', media_type='application/json', examples=[Example(value={'records': [{'name': 'Example Fitness', 'address': 'г. Казань'}]})])})
-    def api_results(job_id: str | None = None) -> Any:
+    @get('/api/results', sync_to_thread=True, summary='Результаты задачи',
+         description='Записи результата задачи (динамические колонки). '
+                     'Без job_id — последняя задача. Если задачи нет — 404.',
+         responses={
+             200: ResponseSpec(ResultsResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'records': [
+                                   {'name': 'Фитнес-клуб', 'address': 'Калининград, Московский проспект, 273',
+                                    'url': 'https://2gis.ru/kaliningrad/firm/70000001000000000'},
+                               ]})]),
+             404: ResponseSpec(dict, description='Задача не найдена',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={
+                                   'ok': False, 'error': 'Задача не найдена'})]),
+         })
+    def api_results(
+        job_id: Annotated[Optional[str], QueryParameter(
+            default=None, description='ID задачи (без него — последняя)')] = None,
+    ) -> Any:
         job = jobs.get(job_id)
         if not job:
             return _err('Задача не найдена', 404)
         return {'records': job.results()}
 
-    @get('/api/generator', sync_to_thread=True, summary='Данные генератора ссылок', description='countries, cities, rubrics')
+    @get('/api/generator', sync_to_thread=True, summary='Данные генератора ссылок',
+         description='Страны, города (базовые + добавленные) и рубрики для конструктора ссылок.',
+         responses={
+             200: ResponseSpec(GeneratorResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={
+                                   'countries': [{'code': 'ru', 'name': 'Россия'}],
+                                   'cities': [{'name': 'Шарья', 'code': 'sharya',
+                                               'domain': 'ru', 'country_code': 'ru'}],
+                                   'rubrics': [{'code': 'fitness_club', 'label': 'Фитнес-клубы',
+                                                'is_russian': True, 'is_non_russian': True,
+                                                'group': 'Спорт'}],
+                               })]),
+         })
     def api_generator() -> Any:
         """Data for the link generator: countries, cities, rubrics."""
         cities = [
@@ -368,25 +789,48 @@ def create_app():
         countries.sort(key=lambda c: c['name'])
         return {'countries': countries, 'cities': cities, 'rubrics': _load_rubrics()}
 
-    @post('/api/cities', sync_to_thread=True, summary='Добавить город',
-          description='Добавляет город в справочник (если отсутствует). '
-                      'Тело: {"name": "...", "code"?: "...", "domain"?: "ru", '
-                      '"country_code"?: "ru"}. Идемпотентно — по code/имени.')
-    def api_add_city(data: dict[str, Any] | None = Body(description='city',
-                     examples=[Example(value={'name': 'Шарья', 'code': 'sharya'})])) -> Any:
-        data = data or {}
+    @post('/api/cities', status_code=200, sync_to_thread=True, summary='Добавить город',
+          description='Добавляет город в справочник (если отсутствует), идемпотентно по '
+                      'code/имени. code необязателен — генерируется транслитом. '
+                      'При невалидном/неполном теле — 400.',
+          responses={
+              200: ResponseSpec(CityAddOk, description='OK: город',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True, 'city': {
+                                    'name': 'Шарья', 'code': 'sharya',
+                                    'domain': 'ru', 'country_code': 'ru'}})]),
+              400: ResponseSpec(dict, description='Нет названия / невалидное тело',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': False, 'error': 'Название города обязательно'})]),
+          })
+    def api_add_city(
+        data: AddCityRequest = Body(
+            title='Город',
+            description='name — обязателен; code генерируется транслитом, если не задан.',
+            examples=[Example(value={'name': 'Шарья', 'code': 'sharya'})],
+        ),
+    ) -> Any:
         try:
             city = _add_city(
-                name=str(data.get('name') or ''),
-                code=str(data.get('code') or '').strip() or None,
-                domain=str(data.get('domain') or 'ru'),
-                country_code=str(data.get('country_code') or 'ru'),
+                name=data.name,
+                code=(data.code or '').strip() or None,
+                domain=data.domain,
+                country_code=data.country_code,
             )
         except ValueError as e:
             return _err(str(e), 400)
         return {'ok': True, 'city': city}
 
-    @get('/api/cities', sync_to_thread=True, summary='Список городов', description='base + добавленные')
+    @get('/api/cities', sync_to_thread=True, summary='Список городов',
+         description='Города: базовый справочник + добавленные через API.',
+         responses={
+             200: ResponseSpec(CitiesResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'cities': [
+                                   {'name': 'Шарья', 'code': 'sharya',
+                                    'domain': 'ru', 'country_code': 'ru'}]})]),
+         })
     def api_cities() -> Any:
         return {'cities': [
             {'name': c['name'], 'code': c['code'], 'domain': c['domain'],
@@ -394,8 +838,24 @@ def create_app():
             for c in _load_cities()
         ]}
 
-    @get('/api/download', sync_to_thread=True, summary='Скачать результат', description='format, job_id')
-    def api_download(format: str = 'csv', job_id: str | None = None) -> Any:
+    @get('/api/download', sync_to_thread=True, summary='Скачать результат',
+         description='Скачивает результат задачи файлом. format: csv/xlsx/json/html. '
+                     'Без job_id — последняя задача. Неизвестный формат — 400, нет данных — 404.',
+         responses={
+             200: ResponseSpec(None, description='Файл результата (CSV/XLSX/JSON/HTML)',
+                               media_type='application/octet-stream'),
+             400: ResponseSpec(dict, description='Неизвестный формат',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'ok': False, 'error': 'Неизвестный формат'})]),
+             404: ResponseSpec(dict, description='Нет данных',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'ok': False, 'error': 'Нет данных'})]),
+         })
+    def api_download(
+        format: Annotated[str, QueryParameter(default='csv', description='Формат: csv / xlsx / json / html')] = 'csv',
+        job_id: Annotated[Optional[str], QueryParameter(
+            default=None, description='ID задачи (без него — последняя)')] = None,
+    ) -> Any:
         if format not in _DOWNLOAD_NAMES:
             return _err('Неизвестный формат')
         job = jobs.get(job_id)
@@ -407,19 +867,57 @@ def create_app():
             logger.error('Ошибка экспорта: %s', e)
             return _err(str(e), 500)
 
-    @get('/api/history', sync_to_thread=True, summary='История парсингов', description='Сохранённые задачи')
+    @get('/api/history', sync_to_thread=True, summary='История парсингов',
+         description='Сохранённые парсинги (новые сверху).',
+         responses={
+             200: ResponseSpec(HistoryResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'items': [
+                                   {'id': '20260814-210000-123456',
+                                    'created_at': '2026-08-14T21:00:00',
+                                    'urls': ['https://2gis.ru/kaliningrad/search/фитнес'],
+                                    'count': 25}]})]),
+         })
     def api_history() -> Any:
         return {'items': history.list()}
 
-    @get('/api/history/{hid:str}/results', sync_to_thread=True, summary='Записи из истории', description='hid')
-    def api_history_results(hid: str) -> Any:
+    @get('/api/history/{hid:str}/results', sync_to_thread=True, summary='Записи из истории',
+         description='Записи сохранённого парсинга. Если записи нет — 404.',
+         responses={
+             200: ResponseSpec(ResultsResponse, description='OK',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'records': [
+                                   {'name': 'Фитнес-клуб', 'address': 'Калининград, Московский проспект, 273'},
+                               ]})]),
+             404: ResponseSpec(dict, description='Запись не найдена',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={
+                                   'ok': False, 'error': 'Запись не найдена'})]),
+         })
+    def api_history_results(hid: Annotated[str, PathParameter(description='ID записи (YYYYMMDD-HHMMSS-ffffff)')]) -> Any:
         docs = history.docs(hid)
         if docs is None:
             return _err('Запись не найдена', 404)
         return {'records': history.records(hid)}
 
-    @get('/api/history/{hid:str}/download', sync_to_thread=True, summary='Скачать из истории', description='hid, format')
-    def api_history_download(hid: str, format: str = 'csv') -> Any:
+    @get('/api/history/{hid:str}/download', sync_to_thread=True, summary='Скачать из истории',
+         description='Скачивает сохранённый парсинг файлом. format: csv/xlsx/json/html. '
+                     'Неизвестный формат — 400, записи нет — 404.',
+         responses={
+             200: ResponseSpec(None, description='Файл результата (CSV/XLSX/JSON/HTML)',
+                               media_type='application/octet-stream'),
+             400: ResponseSpec(dict, description='Неизвестный формат',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={'ok': False, 'error': 'Неизвестный формат'})]),
+             404: ResponseSpec(dict, description='Запись не найдена',
+                               media_type='application/json', generate_examples=False,
+                               examples=[Example(value={
+                                   'ok': False, 'error': 'Запись не найдена'})]),
+         })
+    def api_history_download(
+        hid: Annotated[str, PathParameter(description='ID записи (YYYYMMDD-HHMMSS-ffffff)')],
+        format: Annotated[str, QueryParameter(default='csv', description='Формат: csv / xlsx / json / html')] = 'csv',
+    ) -> Any:
         if format not in _DOWNLOAD_NAMES:
             return _err('Неизвестный формат')
         docs = history.docs(hid)
@@ -435,10 +933,27 @@ def create_app():
             logger.error('Ошибка экспорта истории: %s', e)
             return _err(str(e), 500)
 
-    @post('/api/history/merge', sync_to_thread=True, summary='Объединить парсинги', description='ids в теле')
-    def api_history_merge(data: dict[str, Any] | None = Body(description='ids', examples=[Example(value={'ids':['20260811-160924-376519']})])) -> Any:
-        data = data or {}
-        ids = [str(i) for i in (data.get('ids') or [])]
+    @post('/api/history/merge', status_code=200, sync_to_thread=True, summary='Объединить парсинги',
+          description='Объединяет записи истории (дедуп по телефону/ID фирмы) в новую запись. '
+                      'ids обязателен. При невалидном/неполном теле — 400, нет данных — 400.',
+          responses={
+              200: ResponseSpec(MergeOk, description='OK: новая запись',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True,
+                                                         'id': '20260814-210500-654321',
+                                                         'count': 40})]),
+              400: ResponseSpec(dict, description='Нет ids / нет данных',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': 'Не выбраны записи'})]),
+          })
+    def api_history_merge(
+        data: MergeRequest = Body(
+            title='Параметры',
+            description='ids — список ID записей истории для объединения.',
+            examples=[Example(value={'ids': ['20260811-160924-376519', '20260811-161200-123456']})],
+        ),
+    ) -> Any:
+        ids = [str(i) for i in (data.ids or [])]
         if not ids:
             return _err('Не выбраны записи')
         result = history.merge_and_save(ids)
@@ -447,8 +962,14 @@ def create_app():
         new_id, count = result
         return {'ok': True, 'id': new_id, 'count': count}
 
-    @delete('/api/history/{hid:str}', status_code=200, sync_to_thread=True, summary='Удалить из истории', description='hid')
-    def api_history_delete(hid: str) -> Any:
+    @delete('/api/history/{hid:str}', status_code=200, sync_to_thread=True, summary='Удалить из истории',
+            description='Удаляет запись истории.',
+            responses={
+                200: ResponseSpec(OkResponse, description='OK',
+                                  media_type='application/json', generate_examples=False,
+                                  examples=[Example(value={'ok': True})]),
+            })
+    def api_history_delete(hid: Annotated[str, PathParameter(description='ID записи (YYYYMMDD-HHMMSS-ffffff)')]) -> Any:
         return {'ok': history.delete(hid)}
 
     return Litestar(
@@ -473,6 +994,9 @@ def create_app():
             api_route,
         ],
         static_files_config=[StaticFilesConfig(path='/static', directories=[str(static_dir)])],
+        openapi_config=OpenAPIConfig(
+            title='Parser2GIS API', version=version,
+            openapi_controller=_LocalDocsController),
     )
 
 

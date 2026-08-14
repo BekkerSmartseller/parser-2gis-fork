@@ -107,6 +107,12 @@
 - **Умное определение города (fallback-цепочка):** город филиала определяется не только по явному полю `city`, но и через регионы федерального значения (Москва/СПб/Севастополь), город-центр муниципального округа («Гурьевский муниципальный округ» → «Гурьевск») и населённые пункты с очисткой префикса (`пос.`/`пгт`/`г.`). Организации в посёлках и городских округах больше не теряют город.
 - **Серверный режим:** флаги `--web-host <HOST>` (адрес прослушивания, по умолчанию `127.0.0.1`) и `--web-no-browser` (не открывать браузер) — для запуска веб-интерфейса на сервере/в Docker.
 - **Толерантность к данным:** битые/аномальные контакты (без типа или значения, контакты одним объектом вместо списка) больше не роняют запись.
+- **Геокодинг адреса** (`POST /api/geocode`): поиск адреса через 2GIS UI, перехват `markers/clustered`
+  (новый UI), возврат координат + `id` объекта 2GIS (для маршрутов).
+- **Маршруты через 2GIS** (`POST /api/route`): итинерарий (авто/ОТ/пешком/вело) парсится из
+  серверного HTML 2GIS (SSR) — отдельный routing API не нужен. Точки `lon,lat;ID` для точной
+  привязки, в ответе `segments` и все `variants`. Поддерживается **метро** (Москва/СПб и др.).
+  См. раздел «🚌 Маршруты (routing): правило заполнения параметров».
 
 Автор этих модификаций: **BekkerSmartseller** — форк/дальнейшая разработка на базе `Eroloft/parser-2gis-new`.
 
@@ -195,6 +201,8 @@ Content-Type: application/json
 | GET | `/api/history/HID/download?format=csv` | Скачать из истории |
 | POST | `/api/history/merge` | Объединить записи истории (тело `{"ids": [HID,...]}`) |
 | DELETE | `/api/history/HID` | Удалить запись истории |
+| POST | `/api/geocode` | **Геокодинг адреса** через 2GIS. Тело: `{"query": "...", "city"?: "...", "lat"?: N, "lon"?: N}`. Ответ: `{"ok": true, "lat", "lon", "name", "address", "id"}` — `id` нужен для точной привязки точек маршрута |
+| POST | `/api/route` | **Маршрут** через 2GIS (авто/ОТ/пешком/вело). Тело: `{"from_lat", "from_lon", "to_lat", "to_lon", "transport_mode"?: "car|transit|walk|bike", "city"?, "from_id"?, "to_id"?}`. Ответ: `{"ok", "mode", "duration_s", "distance_m", "segments", "variants"}`. Подробно — раздел «🚌 Маршруты» |
 
 ### Пример (curl)
 
@@ -215,6 +223,21 @@ curl "http://127.0.0.1:8666/api/results?job_id=a1b2c3d4e5f6"
 
 # Скачать CSV
 curl "http://127.0.0.1:8666/api/download?format=csv&job_id=a1b2c3d4e5f6" -o result.csv
+
+# Геокодинг адреса (вернёт координаты + id для маршрута)
+curl -X POST http://127.0.0.1:8666/api/geocode -H 'Content-Type: application/json' -d '{
+  "query": "Московский проспект 273", "city": "Калининград"
+}'
+# -> {"ok": true, "lat": 54.71, "lon": 20.51,
+#     "name": "Московский проспект, 273", "address": null, "id": "111222333444"}
+
+# Маршрут на общественном транспорте (точки с ID из геокодинга)
+curl -X POST http://127.0.0.1:8666/api/route -H 'Content-Type: application/json' -d '{
+  "from_lat": 54.71, "from_lon": 20.51,
+  "to_lat": 54.72, "to_lon": 20.53,
+  "transport_mode": "transit", "city": "kaliningrad",
+  "from_id": "111222333444", "to_id": "555666777888"
+}'
 ```
 
 ### Замечания
@@ -270,8 +293,7 @@ https://2gis.ru/search/<запрос>?m=<долгота>,<широта>/<zoom>
   город с окрестностями, `9.5` — регион).
 - Такой URL можно передать как в `urls` при запуске через `/api/start`, так и
   через CLI (`-i "https://2gis.ru/search/фитнес клуб?m=45.51,58.37/12"`).
-- Координаты центра обычно берут из геокодера — например MOTIS
-  (`GET /api/v1/geocode?text=<город>` → `{lat, lon}`).
+- Координаты центра обычно берут из геокодера (по названию города).
 
 Пример: вместо `https://2gis.ru/sharya/search/фитнес клуб` (1 результат в Шарье)
 
@@ -280,3 +302,101 @@ https://2gis.ru/search/фитнес клуб?m=45.519306,58.37257/12
 ```
 
 вернёт фитнес-клубы по всей округе Шарьи.
+
+
+---
+
+## 🚌 Маршруты (routing): правило заполнения параметров
+
+Маршруты строятся через веб-интерфейс 2GIS (`POST /api/route`): открывается страница
+`directions` в Chrome (headless), 2GIS рендерит итинерарий на сервере (SSR), парсер
+извлекает карточки маршрутов из DOM. Отдельный routing API 2GIS для этого не нужен
+(эндпоинты `routing.api.2gis.ru` / `public-transport.api.2gis.ru` больше не используются
+веб-клиентом). Если 2GIS не смог построить маршрут — эндпоинт отвечает `404`.
+
+### `POST /api/route`
+
+| Поле | Тип | Обязательно | Описание |
+|---|---|---|---|
+| `from_lat` / `from_lon` | number | да | Координаты точки А |
+| `to_lat` / `to_lon` | number | да | Координаты точки Б |
+| `transport_mode` | string | да | `car` / `transit` / `walk` / `bike` |
+| `city` | string | нет | Название города (кириллица) или готовый латинский slug (`kaliningrad`) |
+| `from_id` / `to_id` | string | нет | ID точек 2GIS (из `/api/geocode`) — точная привязка к объекту |
+
+### Как координаты и ID превращаются в URL 2GIS
+
+```
+https://2gis.ru/{city}/directions/{tab}points/{lon,lat[;ID]|lon,lat[;ID]}?m={mid_lon},{mid_lat}/{zoom}
+```
+
+- Точка в URL: `lon,lat` (сначала долгота, потом широта). При наличии ID —
+  `lon,lat;ID` (ID берётся из `/api/geocode`, поле `id`/`geometry_id`).
+  Без ID 2GIS привяжет точку по координатам — маршрут тоже построится, но привязка
+  грубее (точка привяжется к ближайшему объекту).
+- Таб по режиму:
+
+| `transport_mode` | Таб в URL |
+|---|---|
+| `transit` | `tab/bus/` |
+| `car` | `tab/car/` |
+| `walk` | `tab/pedestrian/` |
+| `bike` | `tab/bike/` |
+
+- `?m=lon,lat/zoom` — середина маршрута и зум по дальности (опциональный якорь карты;
+  2GIS сам пересчитывает его после загрузки).
+
+Пример (ОТ, точки с ID):
+
+```
+https://2gis.ru/kaliningrad/directions/tab/bus/points/
+  20.51,54.71;111222333444|20.53,54.72;555666777888?m=20.520000,54.715000/15
+```
+
+### Типовой поток: геокод → маршрут
+
+```bash
+# 1) геокодинг адреса (возвращает координаты + id)
+curl -X POST http://127.0.0.1:8666/api/geocode -H 'Content-Type: application/json' \
+  -d '{"query": "Московский проспект 273", "city": "Калининград"}'
+# -> {"ok": true, "lat": 54.71, "lon": 20.51,
+#     "name": "Московский проспект, 273", "address": ..., "id": "111222333444"}
+
+# 2) маршрут с точными ID точек
+curl -X POST http://127.0.0.1:8666/api/route -H 'Content-Type: application/json' \
+  -d '{"from_lat": 54.71, "from_lon": 20.51,
+       "to_lat": 54.72, "to_lon": 20.53,
+       "transport_mode": "transit", "city": "kaliningrad",
+       "from_id": "111222333444", "to_id": "555666777888"}'
+```
+
+### Ответ `/api/route`
+
+```json
+{
+  "ok": true,
+  "mode": "transit",
+  "duration_s": 3660,
+  "distance_m": null,
+  "walk_duration_s": 1380,
+  "transfers": 0,
+  "segments": [
+    {"type": "walk", "mode": "walk", "route": "", "duration_s": null, ...},
+    {"type": "bus", "mode": "bus", "route": "28", "duration_s": 960, ...},
+    {"type": "walk", "mode": "walk", "route": "", "duration_s": null, ...}
+  ],
+  "variants": [
+    {"duration_s": 3660, "transfers": 0, "segments": [...]},
+    {"duration_s": 4020, "transfers": 1, "segments": [...]}
+  ]
+}
+```
+
+- `segments` — участки маршрута (`walk` / `bus` / `trolleybus` / `tram` /
+  `shuttle_bus` / `suburban_train` / `river_transport` / `cable_car`), у ОТ —
+  номер маршрута в `route`.
+- `variants` — все варианты маршрута (для ОТ 2GIS предлагает несколько),
+  первый продублирован в полях верхнего уровня.
+- Для `car` / `walk` / `bike` заполняются `duration_s`, `distance_m` и `note`
+  (например «с учётом пробок»), `segments` пуст.
+- `distance_m` для ОТ отсутствует (в карточке 2GIS нет дистанции) — `null`.
