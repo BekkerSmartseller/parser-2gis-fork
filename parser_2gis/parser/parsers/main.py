@@ -297,6 +297,33 @@ class MainParser:
 
         if not firm_ids:
             logger.warning('[branches] филиалы на странице не найдены (%s)', branches_url)
+            # Best-effort: у сети может быть один филиал (bc=1) — пробуем вернуть
+            # саму организацию через её фирм-страницу. Если id невалиден/удалён,
+            # 2GIS редиректит на «город по умолчанию» и фирм-страница не вернёт
+            # документ с этим id — даём явную диагностику.
+            m = re.search(r'/branches/(\d+)', branches_url)
+            if m and m.group(1) not in collected_ids:
+                org_id = m.group(1)
+                collected_ids.add(org_id)
+                firm_url = branches_url.replace(f'/branches/{org_id}', f'/firm/{org_id}')
+                self._chrome_remote.clear_requests()
+                self._chrome_remote.navigate(firm_url, referer='https://google.com',
+                                             timeout=120)
+                try:
+                    self._wait_requests_finished()
+                except Exception:  # noqa: BLE001
+                    pass
+                docs = self._drain_byid_docs(5, id_prefix=org_id)
+                if not docs:
+                    logger.warning('[branches] организация %s не найдена в 2GIS '
+                                   '(фирм-страница не вернула документ с этим id)',
+                                   org_id)
+                for doc in docs:
+                    writer.write(doc)
+                    collected_ids.update(self._doc_firm_ids(doc))
+                    collected_records += 1
+                    if collected_records >= max_records:
+                        return collected_records
             return collected_records
 
         for firm_id in firm_ids:
