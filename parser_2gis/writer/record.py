@@ -307,6 +307,7 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
     # Mobile numbers (RF/KZ: 7/8-9XX...) extracted into their own field.
     contacts: dict[str, str] = {}
     contact_comments: dict[str, str] = {}
+    websites: list[str] = []
     mobile_phone = None
     for group in catalog_item.contact_groups:
         for contact in group.contacts:
@@ -322,7 +323,10 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
             elif contact.type == 'email':
                 contacts.setdefault('email', contact.value)
             elif contact.url:
-                contacts.setdefault(contact.type, contact.url.split('?')[0])
+                url = contact.url.split('?')[0]
+                contacts.setdefault(contact.type, url)
+                if contact.type == 'website' and url and url not in websites:
+                    websites.append(url)
             if contact.comment:
                 contact_comments.setdefault(contact.type, contact.comment)
 
@@ -404,6 +408,7 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
         'firm_id': catalog_item.id.split('_')[0] if catalog_item.id else None,
         'org_id': catalog_item.org.id if catalog_item.org else None,
         'contacts': contacts,
+        'websites': websites,
         'mobile': mobile_phone,
         'postcode': catalog_item.address.postcode if catalog_item.address else None,
         'contact_comments': contact_comments,

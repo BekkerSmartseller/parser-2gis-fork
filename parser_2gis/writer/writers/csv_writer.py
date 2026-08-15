@@ -61,6 +61,7 @@ class CSVWriter(FileWriter):
             'instagram_1': 'Instagram', 'vkontakte_1': 'ВКонтакте',
             'average_check': 'Средний чек / цены',
             'branch_count': 'Кол-во филиалов',
+            'websites': 'Веб-сайты (все)',
             'nearest_station': 'Остановка', 'station_distance': 'Расстояние до остановки, м',
             'stations': 'Остановки (все)', 'photos': 'Фото URL',
             'url': '2GIS URL', 'reviews_url': 'Ссылка на отзывы',
@@ -93,7 +94,7 @@ class CSVWriter(FileWriter):
                 'primary_rubric', 'rubric_section', 'sub_rubrics', 'branch_count', 'average_check',
                 'nearest_station', 'station_distance',
                 'phone_1', 'phone_comment', 'whatsapp_1', 'instagram_1', 'telegram_1',
-                'email_1', 'website_1', 'firm_id', 'url', 'mobile', 'postcode',
+                'email_1', 'website_1', 'websites', 'firm_id', 'url', 'mobile', 'postcode',
             ]
             return {k: v for k, v in full_mapping.items() if k in clean_keys}
 
@@ -382,10 +383,21 @@ class CSVWriter(FileWriter):
                       'instagram', 'facebook', 'twitter', 'youtube', 'skype']:
                 append_contact(t, ['url'])
 
-            # Remove arguments from WhatsApp URL
-            for field in data:
-                if field.startswith('whatsapp') and data[field]:
-                    data[field] = data[field].split('?')[0]
+        # Все веб-сайты (массивом через join_char) — для совместимости.
+        websites: list[str] = []
+        for contact_group in catalog_item.contact_groups:
+            for contact in contact_group.contacts:
+                if contact.type == 'website' and contact.url:
+                    url = contact.url.split('?')[0]
+                    if url and url not in websites:
+                        websites.append(url)
+        if websites:
+            data['websites'] = self._options.csv.join_char.join(websites)
+
+        # Remove arguments from WhatsApp URL
+        for field in data:
+            if field.startswith('whatsapp') and data[field]:
+                data[field] = data[field].split('?')[0]
 
             # Values
             for t in ['email', 'skype']:

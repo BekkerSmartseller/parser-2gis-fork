@@ -115,8 +115,10 @@ class HTMLWriter(FileWriter):
             buttons.append(f'<a class="btn tg" href="{esc(c["telegram"])}" target="_blank" rel="noopener">Telegram</a>')
         if 'instagram' in c:
             buttons.append(f'<a class="btn ig" href="{esc(c["instagram"])}" target="_blank" rel="noopener">Instagram</a>')
-        if 'website' in c:
-            buttons.append(f'<a class="btn" href="{esc(c["website"])}" target="_blank" rel="noopener">🌐 Сайт</a>')
+        sites = r.get('websites') or (['website'] if 'website' in c else [])
+        for site_i, site_url in enumerate(sites[:4], 1):
+            label = 'Сайт' if site_i == 1 else f'Сайт {site_i}'
+            buttons.append(f'<a class="btn" href="{esc(site_url)}" target="_blank" rel="noopener">🌐 {label}</a>')
         if 'email' in c:
             buttons.append(f'<a class="btn" href="mailto:{esc(c["email"])}">✉️ E-mail</a>')
         if r['url']:
