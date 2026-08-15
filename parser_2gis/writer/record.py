@@ -330,6 +330,9 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
             if contact.comment:
                 contact_comments.setdefault(contact.type, contact.comment)
 
+    # Все веб-сайты (массив) — внутри contacts, рядом с одиночным website.
+    contacts['websites'] = websites
+
     # Stations
     stations = []
     if catalog_item.links:
@@ -408,7 +411,6 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
         'firm_id': catalog_item.id.split('_')[0] if catalog_item.id else None,
         'org_id': catalog_item.org.id if catalog_item.org else None,
         'contacts': contacts,
-        'websites': websites,
         'mobile': mobile_phone,
         'postcode': catalog_item.address.postcode if catalog_item.address else None,
         'contact_comments': contact_comments,

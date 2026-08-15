@@ -27,7 +27,7 @@ def test_extract_record_websites_all():
     ])
     r = extract_record(doc)
     assert r is not None
-    assert r['websites'] == [
+    assert r['contacts']['websites'] == [
         'http://красноярск.брайтфит.рф/',
         'http://брайтфит.рф',
         'http://brightfit.ru/krs/',
@@ -43,7 +43,7 @@ def test_extract_record_websites_dedup():
         {'type': 'website', 'url': 'http://site.ru/?utm=2'},
     ])
     r = extract_record(doc)
-    assert r['websites'] == ['http://site.ru/']
+    assert r['contacts']['websites'] == ['http://site.ru/']
 
 
 def test_extract_record_websites_single():
@@ -53,7 +53,7 @@ def test_extract_record_websites_single():
         {'type': 'vkontakte', 'url': 'https://vk.com/brightfit'},
     ])
     r = extract_record(doc)
-    assert r['websites'] == ['http://braitfit.ru']
+    assert r['contacts']['websites'] == ['http://braitfit.ru']
     assert r['contacts']['website'] == 'http://braitfit.ru'
     assert r['contacts']['vkontakte'] == 'https://vk.com/brightfit'
 
@@ -64,4 +64,4 @@ def test_extract_record_no_websites():
         {'type': 'phone', 'value': '+73912540010'},
     ])
     r = extract_record(doc)
-    assert r['websites'] == []
+    assert r['contacts']['websites'] == []
