@@ -106,10 +106,30 @@ class MainParser:
         '''
         self._chrome_remote.add_start_script(xhr_script)
 
-    @wait_until_finished(timeout=120)
-    def _wait_requests_finished(self) -> bool:
-        """Wait for all pending requests."""
-        return self._chrome_remote.execute_script('window.openHTTPs == 0')
+    def _wait_requests_finished(self, timeout: int = 120) -> None:
+        """Wait for all pending 2GIS requests (max `timeout` seconds).
+
+        «Зависший» XHR к 2GIS держит счётчик window.openHTTPs > 0 вечно —
+        вместо того чтобы ронять задачу (TimeoutError), ждём до таймаута,
+        логируем и сбрасываем счётчик, чтобы парсинг продолжился.
+        """
+        deadline = time.monotonic() + max(0, int(timeout))
+        while True:
+            try:
+                done = self._chrome_remote.execute_script('window.openHTTPs == 0')
+            except Exception:  # noqa: BLE001
+                return
+            if done:
+                return
+            if time.monotonic() > deadline:
+                logger.warning('[parser] ожидание ответов 2GIS превысило %ss — '
+                               'сбрасываем счётчик и продолжаем.', timeout)
+                try:
+                    self._chrome_remote.execute_script('window.openHTTPs = 0')
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            time.sleep(0.1)
 
     def _get_available_pages(self) -> dict[int, DOMNode]:
         """Get available pages to navigate."""
