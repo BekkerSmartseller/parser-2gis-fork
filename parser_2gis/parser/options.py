@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import List, Optional
-
 from pydantic import BaseModel, ConfigDict, NonNegativeInt, PositiveInt
 
 from ..chrome.options import default_memory_limit
@@ -36,3 +34,4 @@ class ParserOptions(BaseModel):
     gc_pages_interval: PositiveInt = 10
     max_concurrent: PositiveInt = 3
     proxy_mode: str = 'round_robin'
+    collect_branches: bool = True

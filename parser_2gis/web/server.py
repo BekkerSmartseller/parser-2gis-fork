@@ -166,6 +166,8 @@ class AdvancedOptions(BaseModel):
     columns_per_entity: Optional[int] = Field(default=None, ge=1, le=5,
                                               description='Колонок на сущность (1–5)')
     encoding: Optional[str] = Field(default=None, description='Кодировка файла (utf-8, cp1251, ...)')
+    collect_branches: Optional[bool] = Field(
+        default=None, description='Собирать все филиалы сетей (со страницы /branches/)')
 
 
 class StartRequest(BaseModel):
@@ -434,6 +436,8 @@ def _build_config(data: dict[str, Any]) -> Configuration:
             config.writer.csv.columns_per_entity = min(5, max(1, int(adv['columns_per_entity'])))
         if adv.get('encoding'):
             config.writer.encoding = str(adv['encoding'])
+        if adv.get('collect_branches') is not None:
+            config.parser.collect_branches = bool(adv['collect_branches'])
 
     f = data.get('filters', {}) or {}
     config.filters.dedup_franchises = bool(f.get('dedup_franchises'))
