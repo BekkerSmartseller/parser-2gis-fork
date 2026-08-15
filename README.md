@@ -183,7 +183,8 @@ Content-Type: application/json
   "add_comments": false,
   "remove_empty_columns": true,
   "remove_duplicates": true,
-  "encoding": "utf8"
+  "encoding": "utf8",
+  "collect_branches": true      // все филиалы сетей (/branches/)
 }
 ```
 
