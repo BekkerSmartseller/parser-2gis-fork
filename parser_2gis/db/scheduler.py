@@ -218,6 +218,16 @@ def _update_next(schedule_id: int, sched: dict) -> None:
                      [nxt, schedule_id])
 
 
+def mark_stale_running_schedules() -> int:
+    """Расписания, застрявшие в last_status='running' (рестарт процесса),
+    помечаются failed — иначе UI вечно показывает «выполняется»."""
+    with connection() as conn:
+        cur = conn.execute(
+            "UPDATE p2gis.refresh_schedules SET last_status='failed', "
+            "updated_at=now() WHERE last_status='running'")
+        return cur.rowcount
+
+
 # --- Фоновый цикл ---
 
 class Scheduler:

@@ -149,6 +149,25 @@ CREATE TABLE IF NOT EXISTS p2gis.sync_state (
     updated_at       timestamptz NOT NULL DEFAULT now()
 );
 
+-- Реестр задач БД-режима: персистентность + heartbeat для самовосстановления
+-- после рестарта (зависшие задачи пере-очередятся при старте).
+CREATE TABLE IF NOT EXISTS p2gis.jobs (
+    id              text PRIMARY KEY,
+    urls            jsonb NOT NULL DEFAULT '[]',
+    config          jsonb NOT NULL DEFAULT '{}',
+    fingerprints    jsonb NOT NULL DEFAULT '[]',
+    cache_hit       boolean NOT NULL DEFAULT false,
+    status          text NOT NULL DEFAULT 'queued',  -- queued|running|done|stopped|error|interrupted
+    error           text,
+    started_at      timestamptz NOT NULL DEFAULT now(),
+    finished_at     timestamptz,
+    last_heartbeat  timestamptz NOT NULL DEFAULT now(),
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_p2gis_jobs_status ON p2gis.jobs (status);
+CREATE INDEX IF NOT EXISTS idx_p2gis_jobs_heartbeat ON p2gis.jobs (last_heartbeat);
+
 -- Прайс-каталог (вкладка «Цены»): товары/услуги с ценами, собранные
 -- с market-backend.api.2gis.ru/5.0/product/items_by_branch (без Chrome).
 CREATE TABLE IF NOT EXISTS p2gis.branch_prices (

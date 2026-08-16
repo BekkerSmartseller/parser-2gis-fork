@@ -195,6 +195,32 @@ def record_job(job_id: str, urls: list[str], status: str,
         logger.warning('[db] record_job: %s', e)
 
 
+def record_job_failed(job_id: str, urls: list[str], status: str,
+                      started_at: Optional[datetime] = None) -> None:
+    """Для прерванных/упавших задач: пишет ТОЛЬКО журнал parse_requests.
+
+    request_cache не трогаем — частичный результат нельзя класть в кэш
+    (иначе свежий промах стал бы «успешным» ответом)."""
+    if not urls:
+        return
+    start = started_at or datetime.now(timezone.utc)
+    finished = datetime.now(timezone.utc)
+    fingerprints = [f for f in (fingerprint_for_url(u) for u in urls) if f]
+    try:
+        with connection() as conn:
+            with conn.transaction():
+                for fp in fingerprints:
+                    conn.execute(
+                        "INSERT INTO p2gis.parse_requests "
+                        "(started_at, finished_at, job_id, fingerprint, url, city_code, "
+                        "rubric_id, query_text, cache_hit, status, records_found) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE, %s, 0)",
+                        [start, finished, job_id, fp['fingerprint'], fp['url'],
+                         fp['city_code'], fp['rubric_id'], fp['query_text'], status])
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[db] record_job_failed: %s', e)
+
+
 def mark_backfilled(urls: list[str], parsed_at: datetime) -> int:
     """Помечает запросы из файловой истории как спарсенные в момент `parsed_at`."""
     n = 0

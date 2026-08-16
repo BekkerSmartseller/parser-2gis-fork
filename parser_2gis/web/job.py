@@ -111,10 +111,12 @@ class ParseJob:
         """Start parsing in a daemon thread."""
         self.status = 'running'
         if self.db_mode:
+            from ..db import jobs as db_jobs
             from ..db.store import DbCollector
             self.collector = DbCollector(self._config.writer, job_id=self.id)
             self.collector.set_fingerprints(self._fingerprints)
             self.collector.set_cache_hit(self._cache_hit)
+            db_jobs.update_status(self.id, 'running', finished=False)
         else:
             self.collector = CollectorWriter(self._config.writer)
         thread = threading.Thread(target=self._run, daemon=True)
@@ -133,10 +135,20 @@ class ParseJob:
         self._cancelled = True
         self.status = 'stopped'
 
+    def _heartbeat_loop(self, stop: threading.Event) -> None:
+        """Живой сигнал задачи в p2gis.jobs (каждые 30с) — для stale-детектора."""
+        while not stop.wait(30):
+            try:
+                from ..db import jobs as db_jobs
+                db_jobs.heartbeat(self.id)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _run(self) -> None:
         handler = _ListLogHandler(self.logs)
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)  # ensure INFO progress lines are captured
+        hb_stop = threading.Event()
         try:
             assert self.collector is not None
             writer: FileWriter = self.collector
@@ -154,6 +166,9 @@ class ParseJob:
                 return
 
             logger.info('Парсинг запущен.')
+            if self.db_mode:
+                threading.Thread(target=self._heartbeat_loop, args=(hb_stop,),
+                                 daemon=True).start()
             with writer:
                 for url in self._urls:
                     if self._cancelled:
@@ -180,7 +195,19 @@ class ParseJob:
                 self.status = 'error'
                 logger.error('Ошибка во время работы парсера.', exc_info=True)
         finally:
+            hb_stop.set()
             self._parser = None
+            # БД-режим: фиксируем финальный статус в p2gis.jobs и пишем журнал
+            # даже для прерванных/упавших задач (request_cache не трогаем —
+            # частичный результат нельзя класть в кэш).
+            if self.db_mode:
+                try:
+                    from ..db import jobs as db_jobs
+                    db_jobs.update_status(self.id, self.status, self.error, finished=True)
+                    if self.status in ('stopped', 'error'):
+                        self._db_postprocess(self.status)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning('[jobs] финальный статус задачи: %s', e)
             # Persist whatever was collected — full run or partial stop — so the
             # records survive reloads and aren't lost when the user hits Stop.
             # В БД-режиме результаты уже в БД (файловая история не нужна).
@@ -194,21 +221,28 @@ class ParseJob:
             logger.removeHandler(handler)
 
     def _db_postprocess(self, result_status: str) -> None:
-        """После задачи в БД-режиме: журнал + request_cache + автосинк."""
+        """После задачи в БД-режиме: журнал + request_cache + автосинк.
+
+        Для прерванных/упавших исходов пишем только журнал parse_requests
+        (без обновления request_cache и без синка)."""
         try:
             from ..db import cache as db_cache
-            from ..db.sync import sync_organizations
-            db_cache.record_job(self.id, self._urls, result_status,
-                                cache_hit=self._cache_hit,
-                                ttl_hours=self._config.parser.cache_ttl_hours or None,
-                                started_at=self._started_at)
-            if self._config.parser.sync_after and not self._cache_hit:
-                try:
-                    res = sync_organizations(since=self._started_at)
-                    logger.info('Синхронизация в целевую схему: org=%d, филиалы=%d',
-                                res.get('synced_orgs'), res.get('branches_upserted'))
-                except Exception as e:  # noqa: BLE001
-                    logger.warning('Автосинк не выполнен: %s', e)
+            if result_status in ('ok', 'cache'):
+                db_cache.record_job(self.id, self._urls, result_status,
+                                    cache_hit=self._cache_hit,
+                                    ttl_hours=self._config.parser.cache_ttl_hours or None,
+                                    started_at=self._started_at)
+                if self._config.parser.sync_after and not self._cache_hit:
+                    from ..db.sync import sync_organizations
+                    try:
+                        res = sync_organizations(since=self._started_at)
+                        logger.info('Синхронизация в целевую схему: org=%d, филиалы=%d',
+                                    res.get('synced_orgs'), res.get('branches_upserted'))
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning('Автосинк не выполнен: %s', e)
+            else:
+                db_cache.record_job_failed(self.id, self._urls, result_status,
+                                           started_at=self._started_at)
         except Exception as e:  # noqa: BLE001
             logger.warning('[db] пост-обработка задачи: %s', e)
 
@@ -272,6 +306,14 @@ class JobManager:
                        cache_hit=cache_hit)
         with self._lock:
             self._jobs[job_id] = job
+        # БД-режим: персистентная регистрация (для самовосстановления).
+        if job.db_mode:
+            try:
+                from ..db import jobs as db_jobs
+                db_jobs.create_job(job_id, urls, job_config.model_dump(mode='json'),
+                                   fingerprints or [], cache_hit)
+            except Exception as e:  # noqa: BLE001
+                logger.warning('[jobs] регистрация задачи: %s', e)
         self._queue.put_nowait(job)
         return job_id
 

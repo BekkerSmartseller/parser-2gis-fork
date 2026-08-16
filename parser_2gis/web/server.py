@@ -1463,6 +1463,16 @@ def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = T
                 seed_refdata_db()
                 scheduler = getattr(app.state, 'scheduler', None)
                 if scheduler is not None:
+                    # Самовосстановление после рестарта: пере-очередь прерванных
+                    # задач (p2gis.jobs) + сброс застрявших расписаний.
+                    try:
+                        from ..db.recovery import recover_after_restart
+                        jobs_mgr = getattr(app.state, 'jobs', None) or scheduler._jobs
+                        n = recover_after_restart(jobs_mgr)
+                        if n:
+                            logger.info('Самовосстановление: пере-очередено задач: %d', n)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning('Самовосстановление не выполнено: %s', e)
                     scheduler.start()
             else:
                 logger.error('Схема p2gis не применена — БД-режим недоступен.')
