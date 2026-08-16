@@ -8,7 +8,7 @@ from typing import Any, Optional
 from pydantic import ValidationError
 
 from ..logger import logger
-from ..paths import data_path
+
 from .models import CatalogItem
 from .models.attributes import Attribute
 
@@ -17,9 +17,10 @@ from .models.attributes import Attribute
 # ---------------------------------------------------------------------------
 @lru_cache(maxsize=1)
 def _load_rubricator() -> dict:
-    """Загружает рубрикатор 2GIS из data/rubrics.json."""
+    """Загружает рубрикатор 2GIS (свежая копия из user refdata, иначе файл пакета)."""
     try:
-        with open(data_path() / 'rubrics.json', 'r', encoding='utf-8') as f:
+        from ..web.refdata import rubrics_file
+        with open(rubrics_file(), 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception:
         return {}

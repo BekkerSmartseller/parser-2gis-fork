@@ -188,6 +188,22 @@ Content-Type: application/json
 }
 ```
 
+### Автообновление справочников (cities/rubrics)
+
+Справочники городов и рубрик обновляются из `data.2gis.com` автоматически:
+
+- **при запуске** веб-сервера и **раз в сутки** (фоновый поток);
+- **вручную** — `POST /api/refresh`.
+
+Обновлённые файлы сохраняются в `user_path/refdata/` и используются сразу
+(кэш загрузчиков сбрасывается). Управление переменными окружения:
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `P2GIS_REFDATA_REFRESH` | `1` | `0` — отключить автообновление (запуск + расписание) |
+| `P2GIS_REFDATA_INTERVAL_HOURS` | `24` | Через сколько часов справочники считаются устаревшими |
+| `P2GIS_REFDATA_CHECK_MINUTES` | `60` | Как часто фоновый поток проверяет расписание |
+
 ### Мониторинг и результаты
 
 | Метод | Путь | Описание |
@@ -206,6 +222,7 @@ Content-Type: application/json
 | GET | `/api/history/HID/download?format=csv` | Скачать из истории |
 | POST | `/api/history/merge` | Объединить записи истории (тело `{"ids": [HID,...]}`) |
 | DELETE | `/api/history/HID` | Удалить запись истории |
+| POST | `/api/refresh` | **Обновить справочники** 2GIS (cities.json/rubrics.json из data.2gis.com). Ответ: `{ok, status: ok\|skipped\|busy\|error, cities, rubrics, updated_at}` |
 | POST | `/api/geocode` | **Геокодинг адреса** через 2GIS. Тело: `{"query": "...", "city"?: "...", "lat"?: N, "lon"?: N}`. Ответ: `{"ok": true, "lat", "lon", "name", "address", "id"}` — `id` нужен для точной привязки точек маршрута |
 | POST | `/api/route` | **Маршрут** через 2GIS (авто/ОТ/пешком/вело). Тело: `{"from_lat", "from_lon", "to_lat", "to_lon", "transport_mode"?: "car|transit|walk|bike", "city"?, "from_id"?, "to_id"?}`. Ответ: `{"ok", "mode", "duration_s", "distance_m", "segments", "variants"}`. Подробно — раздел «🚌 Маршруты» |
 

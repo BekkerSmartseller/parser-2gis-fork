@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import Configuration
 from ..logger import logger
-from ..paths import data_path, user_path
+from ..paths import user_path
 from ..version import version
 from ..writer import WriterOptions, get_writer
 from .history import History
@@ -305,6 +305,15 @@ class HistoryResponse(BaseModel):
     items: list[HistoryItem] = Field(description='Записи истории (новые сверху)')
 
 
+class RefreshResponse(BaseModel):
+    ok: bool = Field(description='Успех обновления')
+    status: str = Field(description='ok | skipped | busy | error')
+    cities: Optional[int] = Field(default=None, description='Сколько городов получено')
+    rubrics: Optional[int] = Field(default=None, description='Сколько рубрик получено')
+    updated_at: Optional[str] = Field(default=None, description='Время обновления (ISO)')
+    error: Optional[str] = Field(default=None, description='Текст ошибки (если была)')
+
+
 def _custom_cities_path() -> Path:
     """Файл пользовательских городов (добавленных через API)."""
     path = user_path(False) / 'cities_custom.json'
@@ -362,7 +371,8 @@ def _add_city(name: str, code: str | None = None, domain: str = 'ru',
 
 @lru_cache(maxsize=1)
 def _load_cities() -> list[dict[str, Any]]:
-    with open(data_path() / 'cities.json', 'r', encoding='utf-8') as f:
+    from .refdata import cities_file
+    with open(cities_file(), 'r', encoding='utf-8') as f:
         base = json.load(f)
     # добавляем пользовательские города (без дублей по code)
     seen = {c.get('code') for c in base if c.get('code')}
@@ -376,7 +386,8 @@ def _load_cities() -> list[dict[str, Any]]:
 @lru_cache(maxsize=1)
 def _load_rubrics() -> list[dict[str, Any]]:
     """Flat list of rubrics for the web generator picker."""
-    with open(data_path() / 'rubrics.json', 'r', encoding='utf-8') as f:
+    from .refdata import rubrics_file
+    with open(rubrics_file(), 'r', encoding='utf-8') as f:
         rubrics = json.load(f)
 
     def top_group(node: dict[str, Any]) -> str:
@@ -545,6 +556,27 @@ def create_app():
             logger.error('Не удалось запустить парсинг: %s', e)
             return _err(str(e))
         return {'ok': True, 'job_id': job_id}
+
+    @post('/api/refresh', status_code=200, sync_to_thread=True, summary='Обновить справочники 2GIS',
+          description='Перезагружает cities.json и rubrics.json из data.2gis.com '
+                      '(Chrome + перехват API). Обновлённые файлы сохраняются в '
+                      'user refdata и используются загрузчиками сразу. При '
+                      'одновременном обновлении возвращает status=busy.',
+          responses={
+              200: ResponseSpec(RefreshResponse, description='OK',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': True, 'status': 'ok', 'cities': 204,
+                                    'rubrics': 1786,
+                                    'updated_at': '2026-08-16T01:00:00+00:00'})]),
+              500: ResponseSpec(dict, description='Ошибка обновления',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={
+                                    'ok': False, 'status': 'error', 'error': '...'})]),
+          })
+    def api_refresh() -> Any:
+        from .refdata import refresh_reference_data
+        return refresh_reference_data(force=True)
 
     @post('/api/geocode', status_code=200, sync_to_thread=True, summary='Геокодинг адреса через 2GIS',
           description='Открывает поиск 2GIS по адресу (со slug города), перехватывает '
@@ -990,6 +1022,7 @@ def create_app():
             api_status,
             api_results,
             api_generator,
+            api_refresh,
             api_add_city,
             api_cities,
             api_download,
@@ -1013,6 +1046,13 @@ def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = T
     import uvicorn
 
     app = create_app()
+    # Автообновление справочников (при запуске + раз в сутки). Только в
+    # реальном сервере — тесты/импорты не трогают сеть.
+    try:
+        from .refdata import start_background_refresh
+        start_background_refresh()
+    except Exception:  # noqa: BLE001
+        logger.exception('Не удалось запустить фоновое обновление справочников')
     url = f'http://{host}:{port}/'
     logger.info('Веб-интерфейс запущен: %s', url)
     if open_browser:
