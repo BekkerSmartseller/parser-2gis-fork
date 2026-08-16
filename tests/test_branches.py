@@ -48,6 +48,60 @@ def test_doc_firm_ids():
     assert MainParser._doc_firm_ids({}) == []
 
 
+def test_get_branch_urls_adds_city_prefix():
+    """Cityless `/branches/{id}` в выдаче получает город текущей страницы —
+    иначе 2GIS редиректит на «город по умолчанию» (чужие филиалы)."""
+    from parser_2gis.parser.parsers.main import MainParser
+
+    class FakeDom:
+        def __init__(self, hrefs):
+            self._hrefs = hrefs
+
+        def search(self, pred):
+            return [n for n in (_node(h) for h in self._hrefs) if pred(n)]
+
+    class FakeRemote:
+        def __init__(self, url, hrefs):
+            self._url = url
+            self._hrefs = hrefs
+
+        def execute_script(self, script):
+            return self._url
+
+        def get_document(self):
+            return FakeDom(self._hrefs)
+
+    p = MainParser.__new__(MainParser)
+    p._url = ('https://2gis.ru/vologda/search/'
+              '%D1%82%D1%80%D0%B5%D0%BD%D0%B0%D0%B6%D1%91%D1%80%D0%BD%D1%8B%D0%B9'
+              '%20%D0%B7%D0%B0%D0%BB/filters/sort=name')
+    p._chrome_remote = FakeRemote(p._url, [
+        '/vologda/search/тренажёрный зал?stat=eyJ4IjoieSJ9',   # ссылка выдачи — не филиалы
+        '/branches/10978060962631985',                          # cityless -> город страницы
+        '/vologda/branches/10978060962628287',                  # уже с городом — без изменений
+        'https://2gis.ru/branches/10978060962628255',           # absolute cityless -> город
+        'https://example.com/branches/123',                     # чужой хост — игнор
+        '/branches/10978060962628255/filters',                  # с filters — игнор
+    ])
+    urls = p._get_branch_urls()
+    assert 'https://2gis.ru/vologda/branches/10978060962631985' in urls
+    assert 'https://2gis.ru/vologda/branches/10978060962628287' in urls
+    assert 'https://2gis.ru/vologda/branches/10978060962628255' in urls
+    assert not any(u.startswith('https://2gis.ru/branches/') for u in urls)
+    assert not any('example.com' in u for u in urls)
+    assert len(urls) == 3
+
+
+def test_page_city_helper():
+    """_page_city вытаскивает slug города и не путает служебные сегменты."""
+    from parser_2gis.parser.parsers.main import _page_city
+    assert _page_city('https://2gis.ru/vologda/search/фитнес') == 'vologda'
+    assert _page_city('https://2gis.ru/kaliningrad/branches/70000001029980685') == 'kaliningrad'
+    assert _page_city('https://2gis.ru/search/фитнес?m=45.5,58.3/12') is None
+    assert _page_city('https://2gis.ru/branches/70000001029980685') is None
+    assert _page_city(None) is None
+
+
 def test_note_collected_tracks_orgs():
     """_note_collected ведёт счёт собранных фирм по org.id (для пропуска сетей)."""
     from parser_2gis.parser.parsers.main import MainParser

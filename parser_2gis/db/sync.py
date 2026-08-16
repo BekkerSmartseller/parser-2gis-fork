@@ -21,14 +21,13 @@ from .connection import connection, enabled
 _DEFAULT_BATCH = 20000
 
 
-# Схема назначения синхронизации (env P2GIS_SYNC_SCHEMA). Значение по умолчанию
-# совпадает с именем схемы, которое использовалось в прежних версиях, — так
-# существующие установки продолжают работать без изменения конфигурации.
+# Схема назначения синхронизации задаётся через P2GIS_SYNC_SCHEMA (обязательно).
+# Без неё синхронизация не запускается — см. проверку в sync_organizations/sync_prices.
 def _sync_schema() -> str:
     name = os.environ.get('P2GIS_SYNC_SCHEMA', '').strip()
     if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
         return name
-    return 'medexpertai'
+    return ''
 
 
 _SYNC_SCHEMA = _sync_schema()
@@ -427,9 +426,12 @@ def sync_organizations(since: Optional[datetime] = None, limit: int = _DEFAULT_B
 
     Без `since` — берётся курсор из p2gis.sync_state. Один вызов обрабатывает
     до `limit` записей (все их организации). Идемпотентен.
+    Целевая схема задаётся через P2GIS_SYNC_SCHEMA.
     """
     if not enabled():
         raise RuntimeError('БД не настроена (задайте P2GIS_DB_URL)')
+    if not _SYNC_SCHEMA:
+        raise RuntimeError('Схема назначения не задана (задайте P2GIS_SYNC_SCHEMA)')
     if since is None:
         st = sync_status()
         since = st.get('last_synced_at')
@@ -534,6 +536,8 @@ def sync_prices() -> dict[str, Any]:
     """Переносит p2gis.branch_prices в целевую схему + сводит min/max цены филиалов."""
     if not enabled():
         raise RuntimeError('БД не настроена (задайте P2GIS_DB_URL)')
+    if not _SYNC_SCHEMA:
+        raise RuntimeError('Схема назначения не задана (задайте P2GIS_SYNC_SCHEMA)')
     with connection() as conn:
         with conn.transaction():
             cur = conn.cursor()

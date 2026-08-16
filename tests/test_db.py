@@ -231,6 +231,15 @@ def test_sync_organizations_no_db(monkeypatch):
         db_sync.sync_organizations()
 
 
+def test_sync_requires_schema_env(monkeypatch):
+    monkeypatch.setattr(db_sync, 'enabled', lambda: True)
+    monkeypatch.setattr(db_sync, '_SYNC_SCHEMA', '')
+    with pytest.raises(RuntimeError):
+        db_sync.sync_organizations()
+    with pytest.raises(RuntimeError):
+        db_sync.sync_prices()
+
+
 # --- apply_schema без DSN ---
 
 def test_apply_schema_no_dsn(monkeypatch):

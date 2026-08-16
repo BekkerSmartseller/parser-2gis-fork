@@ -19,6 +19,17 @@ if TYPE_CHECKING:
     from ..options import ParserOptions
 
 
+def _page_city(url: Optional[str]) -> Optional[str]:
+    """Slug города из URL вида `https://2gis.ru/{city}/...`.
+
+    Служебные сегменты (координатный поиск без города, /branches/, /firm/)
+    городом не считаются."""
+    m = re.search(r'https?://[^/]+/([^/]+)/', url or '')
+    if m and m.group(1) not in ('search', 'branches', 'firm', 'directions'):
+        return m.group(1)
+    return None
+
+
 class MainParser:
     """Main parser that extracts useful payload
     from search result pages using Chrome browser
@@ -218,17 +229,40 @@ class MainParser:
         """Полные URL `/branches/{network_id}` («N филиала») из текущего DOM.
 
         Ссылка вида `https://2gis.ru/krasnoyarsk/branches/70000001029980685`
-        появляется рядом с карточкой сети в выдаче — по ней собираются филиалы."""
-        base = re.match(r'(https?://[^/]+)', self._url)
-        base = base.group(1) if base else 'https://2gis.ru'
+        появляется рядом с карточкой сети в выдаче — по ней собираются филиалы.
+        Если в DOM ссылка без города (`/branches/{id}` или абсолютная без
+        префикса), подставляем город текущей страницы — иначе 2GIS редиректит
+        на «город по умолчанию» (например город из прошлой сессии) и со
+        страницы собираются филиалы другого города/организации."""
+        loc = self._chrome_remote.execute_script('location.href') or self._url
+        m_host = re.match(r'(https?://[^/]+)', loc)
+        base_host = m_host.group(1) if m_host else 'https://2gis.ru'
+        city = _page_city(loc) or _page_city(self._url)
+
         dom_tree = self._chrome_remote.get_document()
         urls = set()
         for node in dom_tree.search(lambda x: x.local_name == 'a' and 'href' in x.attributes):
             href = node.attributes['href']
             if '?stat=' in href or 'filters' in href:
                 continue
-            if re.search(r'/branches/\d+', href):
-                urls.add(base + href if href.startswith('/') else href)
+            if not re.search(r'/branches/\d+', href):
+                continue
+            if href.startswith('/'):
+                host, path = base_host, href
+            else:
+                m = re.match(r'(https?://[^/]+)(/.*)$', href)
+                if not m or m.group(1) != base_host:
+                    continue
+                host, path = m.group(1), m.group(2)
+            # Ссылка без городского префикса — добавляем город страницы,
+            # чтобы 2GIS не редиректил на «город по умолчанию».
+            if city and host == base_host and re.match(r'/branches/\d+', path):
+                url = f'{base_host}/{city}{path}'
+            elif href.startswith('/'):
+                url = base_host + href
+            else:
+                url = href
+            urls.add(url)
         return urls
 
     def _flush_byid_queue(self) -> None:
