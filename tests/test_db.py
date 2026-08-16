@@ -211,6 +211,14 @@ def test_row_to_branch():
     assert b['socials'] is not None
 
 
+
+def test_sync_insert_has_on_conflict():
+    """INSERT филиалов синка устойчив к дублям firm_id (uq_org_branches_firm)."""
+    from parser_2gis.db.sync import _BRANCH_INSERT_SQL
+    assert 'ON CONFLICT (firm_id) WHERE firm_id IS NOT NULL DO UPDATE SET' in _BRANCH_INSERT_SQL
+    assert 'organization_id=EXCLUDED.organization_id' in _BRANCH_INSERT_SQL
+    assert 'updated_at=now()' in _BRANCH_INSERT_SQL
+
 def test_sync_status_no_db(monkeypatch):
     monkeypatch.setattr(db_sync, 'enabled', lambda: False)
     st = db_sync.sync_status()

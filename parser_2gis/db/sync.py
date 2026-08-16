@@ -47,6 +47,24 @@ INSERT INTO medexpertai.organization_branches
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, 'active', now(), now())
+ON CONFLICT (firm_id) WHERE firm_id IS NOT NULL DO UPDATE SET
+    organization_id=EXCLUDED.organization_id,
+    gis_org_id=EXCLUDED.gis_org_id, name=EXCLUDED.name,
+    description=EXCLUDED.description, address=EXCLUDED.address,
+    address_comment=EXCLUDED.address_comment, city=EXCLUDED.city,
+    district=EXCLUDED.district, region=EXCLUDED.region,
+    country=EXCLUDED.country, postcode=EXCLUDED.postcode,
+    lat=EXCLUDED.lat, lon=EXCLUDED.lon, phone=EXCLUDED.phone,
+    mobile=EXCLUDED.mobile, website=EXCLUDED.website,
+    websites=EXCLUDED.websites, socials=EXCLUDED.socials,
+    rubrics=EXCLUDED.rubrics, photos=EXCLUDED.photos,
+    schedule=EXCLUDED.schedule, schedule_comment=EXCLUDED.schedule_comment,
+    url=EXCLUDED.url, reviews_url=EXCLUDED.reviews_url,
+    nearest_station=EXCLUDED.nearest_station,
+    station_distance=EXCLUDED.station_distance,
+    average_check=EXCLUDED.average_check, rating=EXCLUDED.rating,
+    review_count=EXCLUDED.review_count, raw_data=EXCLUDED.raw_data,
+    status='active', updated_at=now()
 """
 
 _BRANCH_UPDATE_SQL = """
