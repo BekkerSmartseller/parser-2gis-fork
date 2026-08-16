@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS p2gis.refresh_schedules (
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
--- Курсор синхронизации p2gis -> medexpertai.
+-- Курсор синхронизации в целевую схему.
 CREATE TABLE IF NOT EXISTS p2gis.sync_state (
     id               integer PRIMARY KEY DEFAULT 1,
     last_synced_at   timestamptz,

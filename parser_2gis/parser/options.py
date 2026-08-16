@@ -41,5 +41,5 @@ class ParserOptions(BaseModel):
     storage: str = 'files'
     # TTL кэша запросов (часы); 0 — значение по умолчанию (P2GIS_CACHE_TTL_HOURS, 168).
     cache_ttl_hours: int = 0
-    # Автосинхронизация p2gis -> medexpertai после завершения задачи (БД-режим).
+    # Автосинхронизация собранных организаций в целевую схему после задачи (БД-режим).
     sync_after: bool = True

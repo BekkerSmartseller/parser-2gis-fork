@@ -10,7 +10,7 @@ from typing import Any, Optional
 from ..config import Configuration
 from ..logger import logger
 from ..parser import get_parser
-from ..writer import FilterWriter, get_writer
+from ..writer import FilterWriter
 from ..writer.filters import any_filter_enabled
 from ..writer.record import extract_record
 from ..writer.writers import FileWriter
@@ -18,6 +18,7 @@ from .history import History
 
 # Keep at most this many log lines in memory for the live progress panel.
 _MAX_LOG_LINES = 5000
+
 
 class CollectorWriter(FileWriter):
     """In-memory writer: collects raw catalog documents (no file output).
@@ -196,15 +197,15 @@ class ParseJob:
         """После задачи в БД-режиме: журнал + request_cache + автосинк."""
         try:
             from ..db import cache as db_cache
-            from ..db.sync import sync_to_medexpertai
+            from ..db.sync import sync_organizations
             db_cache.record_job(self.id, self._urls, result_status,
                                 cache_hit=self._cache_hit,
                                 ttl_hours=self._config.parser.cache_ttl_hours or None,
                                 started_at=self._started_at)
             if self._config.parser.sync_after and not self._cache_hit:
                 try:
-                    res = sync_to_medexpertai(since=self._started_at)
-                    logger.info('Синхронизация в medexpertai: org=%d, филиалы=%d',
+                    res = sync_organizations(since=self._started_at)
+                    logger.info('Синхронизация в целевую схему: org=%d, филиалы=%d',
                                 res.get('synced_orgs'), res.get('branches_upserted'))
                 except Exception as e:  # noqa: BLE001
                     logger.warning('Автосинк не выполнен: %s', e)

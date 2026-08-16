@@ -173,12 +173,12 @@ class AdvancedOptions(BaseModel):
         default=None, description='Пропускать организации из прошлых задач (кэш seen_firms)')
     storage: Optional[str] = Field(
         default=None, description='Хранилище: files (по умолчанию) или db '
-                                  '(TimescaleDB; кэш запросов, планировщик, синк в medexpertai). '
+                                  '(TimescaleDB; кэш запросов, планировщик, синхронизация). '
                                   'Без значения — db, если задан P2GIS_DB_URL')
     cache_ttl_hours: Optional[int] = Field(
         default=None, gt=0, description='TTL кэша запросов в часах (БД-режим; по умолчанию 168 = 7 дней)')
     sync_after: Optional[bool] = Field(
-        default=None, description='Синхронизировать p2gis -> medexpertai после завершения задачи (БД-режим)')
+        default=None, description='Синхронизировать собранные данные в целевую схему после завершения задачи (БД-режим)')
 
 
 class StartRequest(BaseModel):
@@ -244,12 +244,12 @@ class ScheduleRequest(BaseModel):
                                           description='Сколько Chrome одновременно')
     ttl_hours: Optional[int] = Field(default=None, gt=0, description='TTL кэша, часов')
     sync_after: bool = Field(default=True,
-                             description='Синхронизировать в medexpertai после задачи')
+                             description='Синхронизировать в целевую схему после задачи')
     enabled: bool = Field(default=True, description='Расписание активно')
 
 
 class SyncRequest(BaseModel):
-    """Тело POST /api/sync: фильтры синхронизации p2gis -> medexpertai."""
+    """Тело POST /api/sync: фильтры синхронизации организаций."""
     model_config = ConfigDict(extra='ignore')
 
     since: Optional[str] = Field(default=None, description='ISO-метка: синхронизировать с неё')
@@ -260,7 +260,7 @@ class SyncRequest(BaseModel):
                              description='Деактивировать филиалы сети, отсутствующие в наборе')
     sync_prices: bool = Field(default=True,
                               description='Дополнительно синхронизировать прайс-каталог '
-                                          '(p2gis.branch_prices -> medexpertai.branch_prices)')
+                                          '(p2gis.branch_prices -> целевая схема)')
 
 
 class PricesRequest(BaseModel):
@@ -1326,8 +1326,8 @@ def create_app():
             return _err('Расписание не найдено', 404)
 
     @post('/api/sync', status_code=200, sync_to_thread=True,
-          summary='Синхронизировать в medexpertai',
-          description='Переносит p2gis.records в medexpertai (org + филиалы, upsert по firm_id, '
+          summary='Синхронизировать организации в целевую схему',
+          description='Переносит p2gis.records в целевую схему (org + филиалы, upsert по firm_id, '
                       'деактивация исчезнувших). Без since — с последнего курсора.',
           responses={200: ResponseSpec(dict, description='OK',
                                        media_type='application/json', generate_examples=False)})
@@ -1335,11 +1335,11 @@ def create_app():
         title='Параметры',
         description='Все фильтры опциональны; можно вызывать и без тела.',
         default=None,
-        examples=[Example(value={'limit': 20000})])) -> Any:
+            examples=[Example(value={'limit': 20000})])) -> Any:
         if not _require_db():
             raise HTTPException(status_code=400,
                                 detail='БД не настроена (задайте P2GIS_DB_URL)')
-        from ..db.sync import sync_to_medexpertai, sync_prices_to_medexpertai
+        from ..db.sync import sync_organizations, sync_prices
         since = None
         if data and data.since:
             try:
@@ -1347,14 +1347,14 @@ def create_app():
             except ValueError:
                 return _err('since: некорректный ISO-формат', 400)
         try:
-            res = sync_to_medexpertai(
+            res = sync_organizations(
                 since=since, limit=(data.limit if data and data.limit else 20000),
                 city=(data.city if data else None),
                 rubric_id=(data.rubric_id if data else None),
                 deactivate=(data.deactivate if data else True))
             if data is None or data.sync_prices:
                 try:
-                    res['prices'] = sync_prices_to_medexpertai()
+                    res['prices'] = sync_prices()
                 except Exception as e:  # noqa: BLE001
                     logger.warning('Синхронизация прайсов пропущена: %s', e)
                     res['prices'] = {'error': str(e)}
@@ -1364,7 +1364,7 @@ def create_app():
         return {'ok': True, **res}
 
     @get('/api/sync/status', sync_to_thread=True, summary='Статус синхронизации',
-         description='Курсор и последняя ошибка синхронизации p2gis -> medexpertai.',
+         description='Курсор и последняя ошибка синхронизации в целевую схему.',
          responses={200: ResponseSpec(dict, description='OK',
                                       media_type='application/json', generate_examples=False)})
     def api_sync_status() -> Any:

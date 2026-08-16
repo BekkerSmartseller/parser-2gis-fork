@@ -133,9 +133,9 @@ def parse_arguments() -> tuple[argparse.Namespace, Configuration]:
     p_parser.add_argument('--parser.skip-seen-firms', metavar='{yes,no}', help='Пропускать организации, уже собранные в прошлых задачах (кэш seen_firms)')
 
     db_parser = arg_parser.add_argument_group('Аргументы БД (TimescaleDB)')
-    db_parser.add_argument('--storage', metavar='{files,db}', default=None, help='Хранилище результатов: files (по умолчанию) или db (требуется P2GIS_DB_URL; кэш запросов, планировщик, синк в medexpertai)')
+    db_parser.add_argument('--storage', metavar='{files,db}', default=None, help='Хранилище результатов: files (по умолчанию) или db (требуется P2GIS_DB_URL; кэш запросов, планировщик, синхронизация организаций)')
     db_parser.add_argument('--parser.cache-ttl-hours', metavar='{24,168,...}', help='TTL кэша запросов в часах (БД-режим, по умолчанию 168 = 7 дней)')
-    db_parser.add_argument('--parser.sync-after', metavar='{yes,no}', help='Синхронизировать p2gis -> medexpertai после задачи (БД-режим)')
+    db_parser.add_argument('--parser.sync-after', metavar='{yes,no}', help='Синхронизировать собранные данные в целевую схему после задачи (БД-режим)')
 
     other_parser = arg_parser.add_argument_group('Прочие аргументы')
     other_parser.add_argument('--writer.verbose', metavar='{yes,no}', help='Отображать наименования позиций во время парсинга')

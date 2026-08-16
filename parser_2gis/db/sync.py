@@ -1,13 +1,16 @@
 # ================================
 # parser_2gis/db/sync.py
-# Синхронизация p2gis -> medexpertai (единая база организаций health_ai).
-# Орг-гранулярный инкремент: org + все его филиалы, upsert по firm_id,
+# Синхронизация собранных организаций из схемы p2gis во внешнюю целевую
+# схему (org + все филиалы). Орг-гранулярный инкремент: upsert по firm_id,
 # деактивация филиалов сети, отсутствующих в свежем наборе. Курсор —
 # p2gis.sync_state.last_synced_at. Идемпотентно.
+# Имя целевой схемы задаётся через P2GIS_SYNC_SCHEMA.
 # ================================
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import os
+import re
+from datetime import datetime
 from typing import Any, Optional
 
 from psycopg.types.json import Jsonb
@@ -17,27 +20,40 @@ from .connection import connection, enabled
 
 _DEFAULT_BATCH = 20000
 
-_ORG_INSERT_SQL = """
-INSERT INTO medexpertai.organizations
+
+# Схема назначения синхронизации (env P2GIS_SYNC_SCHEMA). Значение по умолчанию
+# совпадает с именем схемы, которое использовалось в прежних версиях, — так
+# существующие установки продолжают работать без изменения конфигурации.
+def _sync_schema() -> str:
+    name = os.environ.get('P2GIS_SYNC_SCHEMA', '').strip()
+    if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+        return name
+    return 'medexpertai'
+
+
+_SYNC_SCHEMA = _sync_schema()
+
+_ORG_INSERT_SQL = f"""
+INSERT INTO {_SYNC_SCHEMA}.organizations
     (primary_name, synonyms, brand, gis_org_ids, source, status,
      created_at, updated_at, is_partner)
 VALUES (%s, %s, %s, %s, '2gis', 'active', now(), now(), false)
 RETURNING id
 """
 
-_ORG_APPEND_GIS_ID_SQL = """
-UPDATE medexpertai.organizations
+_ORG_APPEND_GIS_ID_SQL = f"""
+UPDATE {_SYNC_SCHEMA}.organizations
 SET gis_org_ids = array_append(gis_org_ids, %s), updated_at = now()
 WHERE id = %s AND NOT (gis_org_ids @> ARRAY[%s]::text[])
 """
 
-_BRANCH_SELECT_FIRMS_SQL = """
-SELECT firm_id, id FROM medexpertai.organization_branches
+_BRANCH_SELECT_FIRMS_SQL = f"""
+SELECT firm_id, id FROM {_SYNC_SCHEMA}.organization_branches
 WHERE organization_id = %s
 """
 
-_BRANCH_INSERT_SQL = """
-INSERT INTO medexpertai.organization_branches
+_BRANCH_INSERT_SQL = f"""
+INSERT INTO {_SYNC_SCHEMA}.organization_branches
     (organization_id, firm_id, gis_org_id, name, description, address,
      address_comment, city, district, region, country, postcode, lat, lon,
      phone, mobile, website, websites, socials, rubrics, photos, schedule,
@@ -80,8 +96,8 @@ ON CONFLICT (firm_id) WHERE firm_id IS NOT NULL DO UPDATE SET
     poi_category=EXCLUDED.poi_category
 """
 
-_BRANCH_UPDATE_SQL = """
-UPDATE medexpertai.organization_branches SET
+_BRANCH_UPDATE_SQL = f"""
+UPDATE {_SYNC_SCHEMA}.organization_branches SET
     gis_org_id=%s, name=%s, description=%s, address=%s, address_comment=%s,
     city=%s, district=%s, region=%s, country=%s, postcode=%s, lat=%s, lon=%s,
     phone=%s, mobile=%s, website=%s, websites=%s, socials=%s, rubrics=%s,
@@ -95,27 +111,27 @@ UPDATE medexpertai.organization_branches SET
 WHERE id = %s
 """
 
-_BRANCH_DEACTIVATE_SQL = """
-UPDATE medexpertai.organization_branches SET status='inactive', updated_at=now()
+_BRANCH_DEACTIVATE_SQL = f"""
+UPDATE {_SYNC_SCHEMA}.organization_branches SET status='inactive', updated_at=now()
 WHERE organization_id = %s AND status != 'inactive'
   AND (firm_id IS NULL OR NOT (firm_id = ANY(%s::text[])))
 """
 
-# Линк рубрик филиала на категории health_ai: p2gis.records.rubric_ids — это
-# коды medexpertai.categories (числовые ID рубрик 2GIS).
-_BRANCH_CATEGORIES_LINK_SQL = """
-INSERT INTO medexpertai.branch_categories (branch_id, category_id, kind)
+# Линк рубрик филиала на категории целевой схемы: p2gis.records.rubric_ids —
+# это коды категорий (числовые ID рубрик 2GIS).
+_BRANCH_CATEGORIES_LINK_SQL = f"""
+INSERT INTO {_SYNC_SCHEMA}.branch_categories (branch_id, category_id, kind)
 SELECT b.id, c.id, 'primary'
-FROM medexpertai.organization_branches b
+FROM {_SYNC_SCHEMA}.organization_branches b
 JOIN p2gis.records r ON r.firm_id = b.firm_id AND r.is_active
-JOIN medexpertai.categories c ON c.code = ANY(r.rubric_ids)
+JOIN {_SYNC_SCHEMA}.categories c ON c.code = ANY(r.rubric_ids)
 WHERE b.organization_id = %s AND b.firm_id = ANY(%s::text[]) AND b.status = 'active'
 ON CONFLICT (branch_id, category_id) DO NOTHING
 """
 
 
 def _row_to_branch(row) -> dict[str, Any]:
-    """Строка p2gis.records -> значения филиала medexpertai."""
+    """Строка p2gis.records -> значения филиала целевой схемы."""
     websites = list(row['websites'] or [])
     # Фолбэк для старых записей: структурированные колонки пусты, но raw_doc
     # содержит attribute_groups/links/dates — извлекаем на лету при синке.
@@ -267,7 +283,7 @@ def _upsert_org(conn, org_id: Optional[str], org_name: Optional[str],
     if not org_id:
         return None
     row = conn.execute(
-        "SELECT id FROM medexpertai.organizations "
+        f"SELECT id FROM {_SYNC_SCHEMA}.organizations "
         "WHERE gis_org_ids @> ARRAY[%s]::text[] LIMIT 1", [org_id]).fetchone()
     if row:
         pk = row['id']
@@ -311,7 +327,7 @@ def _sync_org(conn, org_id: Optional[str], rows: list[dict]) -> dict[str, int]:
         cur = conn.cursor()
         cur.execute(_BRANCH_DEACTIVATE_SQL, [org_pk, firm_ids])
         stats['branches_deactivated'] = cur.rowcount
-        # Связываем рубрики -> категории health_ai (по коду, ON CONFLICT DO NOTHING).
+        # Связываем рубрики -> категории целевой схемы (по коду, ON CONFLICT DO NOTHING).
         try:
             cur.execute(_BRANCH_CATEGORIES_LINK_SQL, [org_pk, firm_ids])
             stats['categories_linked'] = cur.rowcount
@@ -403,11 +419,11 @@ def sync_status() -> dict[str, Any]:
         return {'enabled': True, 'last_synced_at': None, 'last_error': str(e)}
 
 
-def sync_to_medexpertai(since: Optional[datetime] = None, limit: int = _DEFAULT_BATCH,
-                        city: Optional[str] = None,
-                        rubric_id: Optional[str] = None,
-                        deactivate: bool = True) -> dict[str, Any]:
-    """Синхронизирует p2gis.records в medexpertai (org + филиалы).
+def sync_organizations(since: Optional[datetime] = None, limit: int = _DEFAULT_BATCH,
+                       city: Optional[str] = None,
+                       rubric_id: Optional[str] = None,
+                       deactivate: bool = True) -> dict[str, Any]:
+    """Синхронизирует p2gis.records в целевую схему (org + филиалы).
 
     Без `since` — берётся курсор из p2gis.sync_state. Один вызов обрабатывает
     до `limit` записей (все их организации). Идемпотентен.
@@ -474,17 +490,17 @@ def sync_to_medexpertai(since: Optional[datetime] = None, limit: int = _DEFAULT_
 
 
 # ============================================================
-# Синхронизация прайс-каталога p2gis.branch_prices -> medexpertai.branch_prices
+# Синхронизация прайс-каталога p2gis.branch_prices -> целевая схема
 # ============================================================
 
-_BRANCH_PRICES_INSERT_SQL = """
-INSERT INTO medexpertai.branch_prices
+_BRANCH_PRICES_INSERT_SQL = f"""
+INSERT INTO {_SYNC_SCHEMA}.branch_prices
     (branch_id, firm_id, product_id, name, description, price, currency,
      categories, images, source, updated_at, fetched_at)
 SELECT b.id, p.firm_id, p.product_id, p.name, p.description, p.price,
        p.currency, p.categories, p.images, p.source, p.updated_at, p.fetched_at
 FROM p2gis.branch_prices p
-JOIN medexpertai.organization_branches b ON b.firm_id = p.firm_id AND b.status = 'active'
+JOIN {_SYNC_SCHEMA}.organization_branches b ON b.firm_id = p.firm_id AND b.status = 'active'
 ON CONFLICT (branch_id, product_id) DO UPDATE SET
     name=EXCLUDED.name, description=EXCLUDED.description,
     price=EXCLUDED.price, currency=EXCLUDED.currency,
@@ -493,8 +509,8 @@ ON CONFLICT (branch_id, product_id) DO UPDATE SET
     fetched_at=EXCLUDED.fetched_at
 """
 
-_BRANCH_PRICES_SUMMARY_SQL = """
-UPDATE medexpertai.organization_branches b SET
+_BRANCH_PRICES_SUMMARY_SQL = f"""
+UPDATE {_SYNC_SCHEMA}.organization_branches b SET
     min_price = sub.min_price,
     max_price = sub.max_price,
     prices_updated_at = sub.updated_at,
@@ -504,7 +520,7 @@ FROM (
            min(price) AS min_price,
            max(price) AS max_price,
            max(updated_at) AS updated_at
-    FROM medexpertai.branch_prices
+    FROM {_SYNC_SCHEMA}.branch_prices
     GROUP BY branch_id
 ) sub
 WHERE sub.branch_id = b.id
@@ -514,8 +530,8 @@ WHERE sub.branch_id = b.id
 """
 
 
-def sync_prices_to_medexpertai() -> dict[str, Any]:
-    """Переносит p2gis.branch_prices в medexpertai + сводит min/max цены филиалов."""
+def sync_prices() -> dict[str, Any]:
+    """Переносит p2gis.branch_prices в целевую схему + сводит min/max цены филиалов."""
     if not enabled():
         raise RuntimeError('БД не настроена (задайте P2GIS_DB_URL)')
     with connection() as conn:

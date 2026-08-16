@@ -1,5 +1,32 @@
 # История изменений
 
+## [Unreleased]
+
+### Прайс-каталог фирм (market API 2GIS)
+
+- **`POST /api/prices`** — сбор прайс-каталога филиалов с `market-backend.api.2gis.ru`
+  (`items_by_branch`, без Chrome и без авторизации): товары/услуги с ценами,
+  категориями, изображениями и источником. Тело:
+  `{"firm_ids": [...], "locale": "ru_RU", "delay"?: сек}`. В БД-режиме сохраняет
+  в `p2gis.branch_prices` (upsert по `firm_id`+`product_id`), в файловом — возвращает
+  данные без сохранения.
+- **`POST /api/prices/read`** — чтение прайса фирмы из БД
+  (`p2gis.branch_prices`). Тело: `{"firm_id": "...", "limit"?: N}`.
+  Ответ: `{ok, firm_id, items, count}`.
+- **Синхронизация прайсов**: `POST /api/sync` (с `sync_prices: true`) переносит
+  `p2gis.branch_prices` в целевую схему и сводит min/max цены филиалов.
+- **Структурированные атрибуты**: новые поля записей и филиалов
+  (`attribute_groups`, `attribute_tags`, `awards`, `payment_methods`,
+  `accessibility`, `data_currency`, `links_ext`, `dates`, `has_goods`,
+  `has_pinned_goods`, `has_discount`, `is_promoted`, `poi_category`);
+  для старых записей извлекаются на лету из `raw_doc` при синхронизации.
+
+### Регионы городов
+
+- В БД-режиме `p2gis.cities.region` заполняется автоматически из спарсенных
+  записей (город → регион административного деления) и доступен в `/api/cities`
+  и конструкторе ссылок.
+
 ## [2.7.3] - 2026-08-16
 
 ### Хотфикс: кэш-попадания с 0 записей + поиск по тексту
@@ -15,12 +42,6 @@
 - **Текстовый поиск/матчинг устойчив к дефису**: `replace(search_text,'-',' ') ILIKE ...` +
   pg_trgm `similarity` в `records_for_fingerprint`, `count_records` и `GET /api/db/search`
   (запрос «фитнес клуб» теперь находит записи «фитнес-клубы»).
-
-### health_ai (отдельный репозиторий)
-
-- Фронт «Каталог организаций (2GIS)»: список сессий запрашивает до 50 и больше не скрывает
-  закоммиченные сессии — последние видны; активные сессии не выталкиваются за «топ-10»
-  (limit-до-фильтра).
 
 
 
@@ -49,10 +70,10 @@
   справочники из БД; при недоступности БД — фолбэк на файлы.
 - **Пользовательские города** (`POST /api/cities`) в БД-режиме пишутся в `p2gis.cities`
   (`source='custom'`) + в `cities_custom.json` (для файлового режима); дедуп по code/имени.
-- **Категории**: синхронизация `p2gis → medexpertai` дополнительно связывает филиалы с
-  `medexpertai.categories` по коду рубрики (`branch_categories`, `kind='primary'`,
-  `ON CONFLICT DO NOTHING`); `/api/sync` возвращает `categories_linked`.
-  (Коды `medexpertai.categories` — это числовые ID рубрик 2GIS, маппинг джойном по коду.)
+- **Категории**: синхронизация дополнительно связывает филиалы с категориями целевой
+  схемы по коду рубрики (`branch_categories`, `kind='primary'`, `ON CONFLICT DO NOTHING`);
+  `/api/sync` возвращает `categories_linked`. (Коды категорий — это числовые ID рубрик
+  2GIS, маппинг джойном по коду.)
 
 
 
@@ -73,9 +94,10 @@
   во вкладке «🗄 БД» + REST (`GET/POST /api/schedules`, `PUT/DELETE
   /api/schedules/{id}`, `POST /api/schedules/{id}/run|toggle`). Cron через
   `croniter` или простой интервал; лимит воркеров общий через JobManager.
-- **Синхронизация `p2gis → medexpertai`**: орг-гранулярный инкремент
+- **Синхронизация во внешнюю целевую схему**: орг-гранулярный инкремент
   (`POST /api/sync`), upsert по `firm_id`, деактивация филиалов сети,
-  отсутствующих в свежем наборе, курсор `p2gis.sync_state`. Автосинк после
+  отсутствующих в свежем наборе, курсор `p2gis.sync_state`. Имя схемы
+  назначения задаётся через `P2GIS_SYNC_SCHEMA`. Автосинк после
   каждой задачи (`advanced.sync_after`, по умолчанию вкл в БД-режиме).
 - **Поиск из БД** `GET /api/db/search?city=&q=&rubric=` — pg_trgm по
   `search_text`/`rubrics`, без Chrome.

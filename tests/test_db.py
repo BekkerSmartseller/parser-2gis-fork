@@ -105,7 +105,7 @@ def urllib_quote(s):
 # --- планировщик: вычисление next_run / due ---
 
 def test_compute_next_interval():
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
     sched = {'cron': None, 'interval_minutes': 60, 'last_run': None}
     nxt = db_sched._compute_next(sched, now)
@@ -141,7 +141,7 @@ def test_validate_cron_invalid():
     db_sched.validate_cron(None)
 
 
-# --- синхронизация: маппинг строки p2gis.records -> филиал medexpertai ---
+# --- синхронизация: маппинг строки p2gis.records -> филиал целевой схемы ---
 
 def test_record_to_row_rubric_ids_stripped():
     """rubric_ids сохраняются без ведущих пробелов ('268; 4515' -> ['268','4515'])."""
@@ -211,7 +211,6 @@ def test_row_to_branch():
     assert b['socials'] is not None
 
 
-
 def test_sync_insert_has_on_conflict():
     """INSERT филиалов синка устойчив к дублям firm_id (uq_org_branches_firm)."""
     from parser_2gis.db.sync import _BRANCH_INSERT_SQL
@@ -219,16 +218,17 @@ def test_sync_insert_has_on_conflict():
     assert 'organization_id=EXCLUDED.organization_id' in _BRANCH_INSERT_SQL
     assert 'updated_at=now()' in _BRANCH_INSERT_SQL
 
+
 def test_sync_status_no_db(monkeypatch):
     monkeypatch.setattr(db_sync, 'enabled', lambda: False)
     st = db_sync.sync_status()
     assert st['enabled'] is False
 
 
-def test_sync_to_medexpertai_no_db(monkeypatch):
+def test_sync_organizations_no_db(monkeypatch):
     monkeypatch.setattr(db_sync, 'enabled', lambda: False)
     with pytest.raises(RuntimeError):
-        db_sync.sync_to_medexpertai()
+        db_sync.sync_organizations()
 
 
 # --- apply_schema без DSN ---
