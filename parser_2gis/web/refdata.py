@@ -91,7 +91,7 @@ def save_cities_db(cities: list[dict[str, Any]], source: str = '2gis') -> int:
         if not enabled():
             return 0
         rows = [(c.get('code'), c.get('name'), c.get('domain', 'ru'),
-                 c.get('country_code', 'ru'), source)
+                 c.get('country_code', 'ru'), c.get('region'), source)
                 for c in cities if c.get('code') and c.get('name')]
         if not rows:
             return 0
@@ -99,10 +99,11 @@ def save_cities_db(cities: list[dict[str, Any]], source: str = '2gis') -> int:
             with conn.transaction():
                 with conn.cursor() as cur:
                     cur.executemany(
-                        "INSERT INTO p2gis.cities (code, name, domain, country_code, source, updated_at) "
-                        "VALUES (%s, %s, %s, %s, %s, now()) "
+                        "INSERT INTO p2gis.cities (code, name, domain, country_code, region, source, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, now()) "
                         "ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, "
                         "domain=EXCLUDED.domain, country_code=EXCLUDED.country_code, "
+                        "region=COALESCE(EXCLUDED.region, p2gis.cities.region), "
                         "source=EXCLUDED.source, updated_at=now()", rows)
         return len(rows)
     except Exception as e:  # noqa: BLE001
@@ -147,7 +148,7 @@ def load_cities_list() -> list[dict[str, Any]]:
         if enabled():
             with connection() as conn:
                 rows = conn.execute(
-                    "SELECT code, name, domain, country_code FROM p2gis.cities "
+                    "SELECT code, name, domain, country_code, region FROM p2gis.cities "
                     "ORDER BY domain, name").fetchall()
                 if rows:
                     return [dict(r) for r in rows]
@@ -219,8 +220,73 @@ def parse_cities(doc: dict) -> list[dict[str, Any]]:
             'code': item.get('code'),
             'domain': item.get('domain'),
             'country_code': item.get('country_code'),
+            'region': item.get('region'),
         })
     return sorted(cities, key=lambda c: c['domain'])
+
+
+def parse_city_regions(doc: dict) -> dict[str, str]:
+    """Извлекает карту «название города (lower) -> регион» из availableParameters.
+
+    2GIS availableParameters содержит дерево регионов с городами; город может
+    встречаться в нескольких регионах (родительский регион и город как регион
+    федерального значения). Сохраняем первый непустой регион по каждому городу.
+    Регион извлекаем только если запись города явно содержит название региона —
+    иначе карта пропускает город (добьётся из спарсенных записей p2gis.records).
+    """
+    out: dict[str, str] = {}
+
+    def _city_name(node: dict) -> Optional[str]:
+        name = node.get('name')
+        if isinstance(name, str) and name.strip():
+            return name.strip('_').strip().lower()
+        code = node.get('code')
+        if isinstance(code, str) and code.strip():
+            return code.strip().lower()
+        return None
+
+    def _region_of(node: dict) -> Optional[str]:
+        for key in ('region', 'regionName', 'parentName', 'adm_div_name'):
+            v = node.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k in ('cities', 'children', 'items', 'regions') and isinstance(v, list):
+                    for child in v:
+                        name = _city_name(child) if isinstance(child, dict) else None
+                        region = _region_of(child) if isinstance(child, dict) else None
+                        if name and region and name not in out:
+                            out[name] = region
+                        walk(child)
+                else:
+                    walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(doc)
+    return out
+
+
+def apply_city_regions(cities: list[dict[str, Any]],
+                       regions_map: dict[str, str]) -> int:
+    """Проставляет region городам (по названию, lower), возвращает число обновлённых."""
+    n = 0
+    if not regions_map:
+        return 0
+    for c in cities:
+        key = str(c.get('name') or '').strip('_').strip().lower()
+        if not key:
+            continue
+        region = regions_map.get(key)
+        if region and not c.get('region'):
+            c['region'] = region
+            n += 1
+    return n
 
 
 def parse_rubrics(doc: dict) -> dict[str, dict]:
@@ -261,6 +327,7 @@ def refresh_reference_data(force: bool = False) -> dict:
 
         cities: list[dict] = []
         rubrics: dict[str, dict] = {}
+        city_regions: dict[str, str] = {}
         with ChromeRemote(chrome_options,
                           [r'https://catalog\.api\.2gis\.[^/]+/.*/region/list',
                            r'https://hermes\.2gis\.ru/api/data/availableParameters']) as remote:
@@ -273,12 +340,21 @@ def refresh_reference_data(force: bool = False) -> dict:
             resp = remote.wait_response(r'https://hermes\.2gis\.ru/api/data/availableParameters')
             if resp:
                 body = remote.get_response_body(resp, timeout=15)
-                rubrics = parse_rubrics(json.loads(body))
+                doc = json.loads(body)
+                rubrics = parse_rubrics(doc)
+                city_regions = parse_city_regions(doc)
 
         if not cities:
             raise RuntimeError('2GIS не вернул список городов (region/list)')
         if not rubrics:
             raise RuntimeError('2GIS не вернул рубрикатор (availableParameters)')
+
+        # Регионы городов: из дерева availableParameters (дополнение; добивка из
+        # спарсенных записей p2gis.records происходит при синке в store.py/sync.py).
+        n_regions = apply_city_regions(cities, city_regions)
+        if n_regions:
+            logger.info('[refdata] проставлены регионы %d городам из availableParameters',
+                        n_regions)
 
         _write_atomic(_refdata_dir() / 'cities.json', cities)
         _write_atomic(_refdata_dir() / 'rubrics.json', rubrics)

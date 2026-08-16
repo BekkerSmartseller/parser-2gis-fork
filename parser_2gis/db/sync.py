@@ -221,7 +221,47 @@ def _sync_org(conn, org_id: Optional[str], rows: list[dict]) -> dict[str, int]:
             stats['categories_linked'] = cur.rowcount
         except Exception as e:  # noqa: BLE001
             logger.warning('[sync] branch_categories: %s', e)
+    # Добиваем регион города в p2gis.cities (надёжный источник — спарсенные записи).
+    try:
+        _backfill_city_regions(conn, rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[sync] backfill_city_regions: %s', e)
     return stats
+
+
+def _backfill_city_regions(conn, rows: list[dict]) -> None:
+    """Проставляет p2gis.cities.region из записей (город -> регион адм. деления).
+
+    Регион города не приходит из region/list; основной источник — записи
+    (p2gis.records.region). Обновляем только города с пустым регионом."""
+    seen: set[tuple[str, str]] = set()
+    pairs: list[tuple[str, str]] = []
+    for r in rows:
+        city_code = (r.get('city_code') or '').strip()
+        region = (r.get('region') or '').strip()
+        city_name = (r.get('city') or '').strip()
+        if not city_code or not region:
+            continue
+        key = (city_code, region)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((city_code, region, city_name))
+    if not pairs:
+        return
+    try:
+        for city_code, region, city_name in pairs:
+            conn.execute(
+                "UPDATE p2gis.cities SET region = %s, updated_at = now() "
+                "WHERE code = %s AND (region IS NULL OR region = '')",
+                [region, city_code])
+            if city_name:
+                conn.execute(
+                    "UPDATE p2gis.cities SET region = %s, updated_at = now() "
+                    "WHERE name = %s AND code = %s AND (region IS NULL OR region = '')",
+                    [region, city_name, city_code])
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[sync] backfill_city_regions: %s', e)
 
 
 def _branch_insert_params(org_pk: int, b: dict) -> list[Any]:

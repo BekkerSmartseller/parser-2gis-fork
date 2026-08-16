@@ -215,6 +215,9 @@ class AddCityRequest(BaseModel):
                                 examples=['sharya'])
     domain: str = Field(default='ru', description='Домен страны (ru, kz, by, ...)')
     country_code: str = Field(default='ru', description='Код страны')
+    region: Optional[str] = Field(default=None,
+                                  description='Регион/область города (для LLM-поиска по области)',
+                                  examples=['Костромская область'])
 
 
 class MergeRequest(BaseModel):
@@ -310,6 +313,8 @@ class CityInfo(BaseModel):
     code: str = Field(description='Код города (slug)', examples=['sharya'])
     domain: str = Field(description='Домен страны', examples=['ru'])
     country_code: str = Field(description='Код страны', examples=['ru'])
+    region: Optional[str] = Field(default=None, description='Регион/область города',
+                                  examples=['Костромская область'])
 
 
 class RubricInfo(BaseModel):
@@ -394,7 +399,7 @@ def _save_custom_cities(entries: list[dict[str, Any]]) -> None:
 
 
 def _add_city(name: str, code: str | None = None, domain: str = 'ru',
-              country_code: str = 'ru') -> dict[str, Any]:
+              country_code: str = 'ru', region: str | None = None) -> dict[str, Any]:
     """Добавляет город в список (base + custom). Идемпотентно по code/имени.
 
     В БД-режиме город также пишется в p2gis.cities (source='custom').
@@ -405,14 +410,20 @@ def _add_city(name: str, code: str | None = None, domain: str = 'ru',
     code = (code or _translit_slug(name)).strip()
     domain = (domain or 'ru').strip()
     country_code = (country_code or 'ru').strip()
+    region = (region or '').strip() or None
 
     # дедуп: уже есть в base или custom?
     all_cities = _load_cities()
     for c in all_cities:
         if c.get('code') == code or c.get('name', '').strip().lower() == name.lower():
+            if region and not c.get('region'):
+                c = dict(c)
+                c['region'] = region
             return dict(c)
 
     entry = {'name': name, 'code': code, 'domain': domain, 'country_code': country_code}
+    if region:
+        entry['region'] = region
 
     # БД-режим: upsert в p2gis.cities (source='custom'), кэш сбрасывается.
     if _db_enabled():
@@ -925,7 +936,7 @@ def create_app():
         """Data for the link generator: countries, cities, rubrics."""
         cities = [
             {'name': c['name'], 'code': c['code'], 'domain': c['domain'],
-             'country_code': c['country_code']}
+             'country_code': c['country_code'], 'region': c.get('region')}
             for c in _load_cities()
         ]
         countries = [{'code': k, 'name': v} for k, v in COUNTRIES.items()]
@@ -960,6 +971,7 @@ def create_app():
                 code=(data.code or '').strip() or None,
                 domain=data.domain,
                 country_code=data.country_code,
+                region=data.region,
             )
         except ValueError as e:
             return _err(str(e), 400)
@@ -972,12 +984,13 @@ def create_app():
                                media_type='application/json', generate_examples=False,
                                examples=[Example(value={'cities': [
                                    {'name': 'Шарья', 'code': 'sharya',
-                                    'domain': 'ru', 'country_code': 'ru'}]})]),
+                                    'domain': 'ru', 'country_code': 'ru',
+                                    'region': 'Костромская область'}]})]),
          })
     def api_cities() -> Any:
         return {'cities': [
             {'name': c['name'], 'code': c['code'], 'domain': c['domain'],
-             'country_code': c['country_code']}
+             'country_code': c['country_code'], 'region': c.get('region')}
             for c in _load_cities()
         ]}
 

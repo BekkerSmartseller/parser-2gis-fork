@@ -36,6 +36,37 @@ def test_parse_rubrics():
     assert out['barbershop']['label'] == 'Барбершопы'
 
 
+def test_parse_city_regions():
+    """availableParameters-дерево -> карта город(lower) -> регион."""
+    doc = {'regions': [
+        {'name': 'Костромская область', 'cities': [
+            {'name': 'Кострома', 'code': 'kostroma', 'regionName': 'Костромская область'},
+            {'name': 'Шарья', 'code': 'sharya', 'regionName': 'Костромская область'},
+        ]},
+        {'name': 'Москва', 'cities': [
+            {'name': 'Москва', 'code': 'moscow', 'regionName': 'Москва'},
+        ]},
+    ]}
+    out = refdata.parse_city_regions(doc)
+    assert out.get('кострома') == 'Костромская область'
+    assert out.get('шарья') == 'Костромская область'
+    assert out.get('москва') == 'Москва'
+
+
+def test_apply_city_regions():
+    cities = [
+        {'name': 'Кострома', 'code': 'kostroma', 'domain': 'ru'},
+        {'name': 'Шарья', 'code': 'sharya', 'domain': 'ru'},
+        {'name': 'Москва', 'code': 'moscow', 'domain': 'ru', 'region': 'Москва'},
+    ]
+    n = refdata.apply_city_regions(
+        cities, {'кострома': 'Костромская область', 'шарья': 'Костромская область'})
+    assert n == 2  # Москва уже с регионом — не трогаем
+    assert cities[0]['region'] == 'Костромская область'
+    assert cities[1]['region'] == 'Костромская область'
+    assert cities[2]['region'] == 'Москва'
+
+
 def test_refdata_files_prefer_user_copy(tmp_path, monkeypatch):
     """Без user-копии — файл пакета; с копией — она."""
     monkeypatch.setattr(refdata, '_refdata_dir', lambda: tmp_path)
@@ -166,7 +197,12 @@ def test_save_db_calls(monkeypatch):
     n = refdata.save_cities_db([{'name': 'Шарья', 'code': 'sharya', 'domain': 'ru',
                                  'country_code': 'ru'}], source='custom')
     assert n == 1
-    assert recorded and recorded[0][1][0] == ('sharya', 'Шарья', 'ru', 'ru', 'custom')
+    assert recorded and recorded[0][1][0] == ('sharya', 'Шарья', 'ru', 'ru', None, 'custom')
+    recorded.clear()
+    refdata.save_cities_db([{'name': 'Кострома', 'code': 'kostroma', 'domain': 'ru',
+                             'country_code': 'ru', 'region': 'Костромская область'}])
+    assert recorded and recorded[0][1][0] == ('kostroma', 'Кострома', 'ru', 'ru',
+                                              'Костромская область', '2gis')
     recorded.clear()
     refdata.save_rubrics_db({'268': {'code': '268', 'label': 'Фитнес-клубы', 'parentCode': '0'}})
     assert recorded and recorded[0][1][0][2] == '0'

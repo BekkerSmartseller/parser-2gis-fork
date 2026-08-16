@@ -132,10 +132,48 @@ def upsert_records(docs: list[Any], job_id: Optional[str] = None) -> int:
             with conn.transaction():
                 with conn.cursor() as cur:
                     cur.executemany(_INSERT_SQL, rows)
+                _backfill_city_regions(conn, rows)
         return len(rows)
     except Exception as e:  # noqa: BLE001
         logger.error('[db] upsert_records: %s', e)
         raise
+
+
+def _backfill_city_regions(conn, rows) -> None:
+    """Добивает p2gis.cities.region из записей (город -> регион из адм. деления).
+
+    Регион города не приходит из region/list (только из дерева availableParameters);
+    основной надёжный источник — спарсенные записи. Обновляем только города
+    с пустым регионом, идемпотентно."""
+    seen: set[tuple[str, str]] = set()
+    pairs: list[tuple[str, str]] = []
+    for row in rows:
+        city_code = row[8]   # индекс city_code в кортеже _record_to_row
+        city_name = row[7] if isinstance(row[7], str) else None  # city (title)
+        region = row[11] if isinstance(row[11], str) else None  # region
+        if not city_code or not region:
+            continue
+        key = (str(city_code), region)
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((str(city_code), region, city_name or ''))
+    if not pairs:
+        return
+    try:
+        from psycopg.types.json import Jsonb  # noqa: F401  (общий импорт jsonb)
+        for city_code, region, city_name in pairs:
+            conn.execute(
+                "UPDATE p2gis.cities SET region = %s, updated_at = now() "
+                "WHERE code = %s AND (region IS NULL OR region = '')",
+                [region, city_code])
+            if city_name:
+                conn.execute(
+                    "UPDATE p2gis.cities SET region = %s, updated_at = now() "
+                    "WHERE name = %s AND code = %s AND (region IS NULL OR region = '')",
+                    [region, city_name, city_code])
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[db] backfill_city_regions: %s', e)
 
 
 def _docs_from_rows(rows) -> list[Any]:

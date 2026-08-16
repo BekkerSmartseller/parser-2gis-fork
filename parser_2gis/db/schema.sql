@@ -140,11 +140,16 @@ CREATE TABLE IF NOT EXISTS p2gis.cities (
     name         text NOT NULL,
     domain       text NOT NULL DEFAULT 'ru',
     country_code text NOT NULL DEFAULT 'ru',
+    region       text,
     source       text NOT NULL DEFAULT '2gis',   -- '2gis' | 'custom'
     updated_at   timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_p2gis_cities_domain ON p2gis.cities (domain);
+CREATE INDEX IF NOT EXISTS idx_p2gis_cities_region ON p2gis.cities (region);
+
+-- Миграция для существующих БД (идемпотентно).
+ALTER TABLE p2gis.cities ADD COLUMN IF NOT EXISTS region text;
 
 CREATE TABLE IF NOT EXISTS p2gis.rubrics (
     code        text PRIMARY KEY,
