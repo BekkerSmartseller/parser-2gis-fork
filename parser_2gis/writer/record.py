@@ -65,6 +65,12 @@ _AVERAGE_CHECK_KEYWORDS = re.compile(
 # Группы атрибутов, которые не несут практической ценности для выгрузки.
 _NOISE_GROUPS = {'Актуальность данных', 'Способы оплаты', 'Тип предприятия'}
 
+# Специальные группы атрибутов — выделяются в структурированные поля.
+_PAYMENT_GROUP = 'Способы оплаты'
+_ACCESSIBILITY_GROUP = 'Доступная среда'
+_DATA_CURRENCY_GROUP = 'Актуальность данных'
+_AWARDS_GROUP = 'Премия 2ГИС'
+
 
 def _adm_value(catalog_item: CatalogItem, adm_type: str) -> Optional[str]:
     """Get administrative division value by type."""
@@ -232,6 +238,105 @@ def usable_attributes(catalog_item: CatalogItem) -> str:
     return '; '.join(attributes)
 
 
+def _group_attribute_dicts(group) -> list[dict]:
+    """Атрибуты группы в JSON-совместимом виде: [{id, tag, name}]."""
+    out = []
+    for attr in group.attributes:
+        d = {}
+        if attr.id:
+            d['id'] = attr.id
+        if attr.tag:
+            d['tag'] = attr.tag
+        if attr.name:
+            d['name'] = attr.name
+        if getattr(attr, 'is_award', None):
+            d['is_award'] = True
+        if d:
+            out.append(d)
+    return out
+
+
+def attribute_groups_dict(catalog_item: CatalogItem) -> list[dict]:
+    """Все группы атрибутов (включая payment/актуальность/тип) структурированно.
+
+    [{"name": "Фитнес-клубы и тренажёрные залы", "attributes": [{"id","tag","name"}]}].
+    """
+    out = []
+    for group in catalog_item.attribute_groups:
+        attrs = _group_attribute_dicts(group)
+        if not attrs:
+            continue
+        g = {'name': group.name or ''}
+        if group.icon_url:
+            g['icon_url'] = group.icon_url
+        g['attributes'] = attrs
+        out.append(g)
+    return out
+
+
+def attribute_tags(catalog_item: CatalogItem) -> list[str]:
+    """Плоский список машиночитаемых тегов всех атрибутов (для фильтрации)."""
+    tags = []
+    for group in catalog_item.attribute_groups:
+        for attr in group.attributes:
+            if attr.tag:
+                tags.append(attr.tag)
+    return tags
+
+
+def _group_names(catalog_item: CatalogItem, group_name: str) -> list[str]:
+    """Имена атрибутов конкретной группы (для payment_methods/accessibility и т.д.)."""
+    for group in catalog_item.attribute_groups:
+        if group.name == group_name:
+            return [a.name for a in group.attributes if a.name]
+    return []
+
+
+def _group_tags(catalog_item: CatalogItem, group_name: str) -> list[str]:
+    """Теги атрибутов конкретной группы."""
+    for group in catalog_item.attribute_groups:
+        if group.name == group_name:
+            return [a.tag for a in group.attributes if a.tag]
+    return []
+
+
+def awards_list(catalog_item: CatalogItem) -> list[dict]:
+    """Награды/премии: группа «Премия 2ГИС» или атрибуты с is_award=True."""
+    awards = []
+    for group in catalog_item.attribute_groups:
+        for attr in group.attributes:
+            if getattr(attr, 'is_award', None):
+                awards.append({'tag': attr.tag, 'name': attr.name})
+            elif group.name == _AWARDS_GROUP and attr.name:
+                awards.append({'tag': attr.tag, 'name': attr.name})
+    return awards
+
+
+def links_ext_dict(catalog_item: CatalogItem) -> dict:
+    """Связанные объекты (остановки, метро, парковки, входы) в JSON-виде."""
+    links = catalog_item.links
+    if not links:
+        return {}
+    out: dict = {}
+    stations = [{'name': s.name, 'distance': s.distance,
+                 'route_types': list(s.route_types or [])}
+                for s in links.nearest_stations if s.name]
+    if stations:
+        out['nearest_stations'] = stations
+    metro = [{'id': m.id, 'distance': m.distance} for m in links.nearest_metro]
+    if metro:
+        out['nearest_metro'] = metro
+    parking = [p.id for p in links.nearest_parking]
+    if parking:
+        out['nearest_parking'] = parking
+    entrances = [{'id': e.id, 'is_primary': e.is_primary,
+                  'is_visible_on_map': e.is_visible_on_map,
+                  'geometry': e.geometry} for e in links.entrances if e.id]
+    if entrances:
+        out['entrances'] = entrances
+    return out
+
+
 _DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 
 
@@ -380,6 +485,12 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
     # Attributes
     attributes_str = usable_attributes(catalog_item)
 
+    # Даты (создание/обновление записи в 2GIS).
+    dates = None
+    dates_raw = getattr(catalog_item, 'dates', None)
+    if dates_raw and isinstance(dates_raw, dict):
+        dates = {k: v for k, v in dates_raw.items() if v}
+
     return {
         'name': name,
         'description': description,
@@ -403,6 +514,22 @@ def extract_record(catalog_doc: Any) -> Optional[dict[str, Any]]:
                                     if catalog_item.reviews else None),
         'average_check': _average_check(catalog_item),
         'attributes': attributes_str,
+        # Структурированные атрибуты (новые поля, JSON-совместимые).
+        'attribute_groups': attribute_groups_dict(catalog_item),
+        'attribute_tags': attribute_tags(catalog_item),
+        'awards': awards_list(catalog_item),
+        'payment_methods': _group_names(catalog_item, _PAYMENT_GROUP),
+        'payment_tags': _group_tags(catalog_item, _PAYMENT_GROUP),
+        'accessibility': _group_names(catalog_item, _ACCESSIBILITY_GROUP),
+        'accessibility_tags': _group_tags(catalog_item, _ACCESSIBILITY_GROUP),
+        'data_currency': (_group_names(catalog_item, _DATA_CURRENCY_GROUP) or [None])[0],
+        'links_ext': links_ext_dict(catalog_item),
+        'dates': dates,
+        'has_goods': bool(getattr(catalog_item, 'has_goods', None)),
+        'has_pinned_goods': bool(getattr(catalog_item, 'has_pinned_goods', None)),
+        'has_discount': bool(getattr(catalog_item, 'has_discount', None)),
+        'is_promoted': bool(getattr(catalog_item, 'is_promoted', None)),
+        'poi_category': getattr(catalog_item, 'poi_category', None),
         'nearest_station': nearest_station,
         'station_distance': station_distance,
         'stations': stations_str,

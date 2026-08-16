@@ -258,6 +258,30 @@ class SyncRequest(BaseModel):
     rubric_id: Optional[str] = Field(default=None, description='Рубрика (rubricId)')
     deactivate: bool = Field(default=True,
                              description='Деактивировать филиалы сети, отсутствующие в наборе')
+    sync_prices: bool = Field(default=True,
+                              description='Дополнительно синхронизировать прайс-каталог '
+                                          '(p2gis.branch_prices -> medexpertai.branch_prices)')
+
+
+class PricesRequest(BaseModel):
+    """Тело POST /api/prices: загрузка прайс-каталога фирм с market API."""
+    model_config = ConfigDict(extra='ignore')
+
+    firm_ids: list[str] = Field(
+        description='firm_id филиалов (branch_id в 2GIS)', min_length=1,
+        examples=[['9148465024074680']])
+    locale: str = Field(default='ru_RU', description='Локаль (ru_RU)')
+    delay: Optional[float] = Field(default=None, ge=0,
+                                   description='Пауза между фирмами (сек)')
+
+
+class PricesReadRequest(BaseModel):
+    """Тело POST /api/prices/read: чтение прайса из БД."""
+    model_config = ConfigDict(extra='ignore')
+
+    firm_id: str = Field(description='firm_id филиала', examples=['9148465024074680'])
+    limit: Optional[int] = Field(default=None, ge=1, le=5000,
+                                 description='Максимум позиций')
 
 
 # --- Модели ответов ---
@@ -1315,7 +1339,7 @@ def create_app():
         if not _require_db():
             raise HTTPException(status_code=400,
                                 detail='БД не настроена (задайте P2GIS_DB_URL)')
-        from ..db.sync import sync_to_medexpertai
+        from ..db.sync import sync_to_medexpertai, sync_prices_to_medexpertai
         since = None
         if data and data.since:
             try:
@@ -1328,6 +1352,12 @@ def create_app():
                 city=(data.city if data else None),
                 rubric_id=(data.rubric_id if data else None),
                 deactivate=(data.deactivate if data else True))
+            if data is None or data.sync_prices:
+                try:
+                    res['prices'] = sync_prices_to_medexpertai()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning('Синхронизация прайсов пропущена: %s', e)
+                    res['prices'] = {'error': str(e)}
         except Exception as e:
             logger.error('Ошибка синхронизации: %s', e)
             return _err(str(e), 500)
@@ -1340,6 +1370,37 @@ def create_app():
     def api_sync_status() -> Any:
         from ..db.sync import sync_status
         return sync_status()
+
+    @post('/api/prices', status_code=200, sync_to_thread=True,
+          summary='Загрузить прайс-каталог фирм (вкладка «Цены»)',
+          description='Собирает цены с market-backend.api.2gis.ru (без Chrome) '
+                      'и в БД-режиме сохраняет в p2gis.branch_prices. '
+                      'В файловом режиме возвращает данные без сохранения.',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False)})
+    def api_prices(data: PricesRequest = Body(
+            title='Параметры',
+            description='firm_ids — список branch_id филиалов.',
+            examples=[Example(value={'firm_ids': ['9148465024074680'],
+                                     'locale': 'ru_RU'})])) -> Any:
+        from ..db import prices as prices_db
+        res = prices_db.fetch_many(data.firm_ids, locale=data.locale,
+                                   delay=data.delay if data.delay is not None else 0.4)
+        return {'ok': True, 'results': res}
+
+    @post('/api/prices/read', status_code=200, sync_to_thread=True,
+          summary='Прочитать прайс фирмы из БД',
+          description='Возвращает позиции прайс-каталога из p2gis.branch_prices.',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False)})
+    def api_prices_read(data: PricesReadRequest = Body(
+            title='Параметры',
+            description='firm_id + лимит позиций.',
+            examples=[Example(value={'firm_id': '9148465024074680', 'limit': 100})])) -> Any:
+        from ..db import prices as prices_db
+        items = prices_db.list_firm_prices(data.firm_id,
+                                           limit=data.limit if data.limit else 500)
+        return {'ok': True, 'firm_id': data.firm_id, 'items': items, 'count': len(items)}
 
     app = Litestar(
         route_handlers=[
@@ -1374,6 +1435,8 @@ def create_app():
             api_schedule_toggle,
             api_sync,
             api_sync_status,
+            api_prices,
+            api_prices_read,
         ],
         static_files_config=[StaticFilesConfig(path='/static', directories=[str(static_dir)])],
         openapi_config=OpenAPIConfig(

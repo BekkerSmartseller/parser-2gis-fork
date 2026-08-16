@@ -58,6 +58,21 @@ CREATE TABLE IF NOT EXISTS p2gis.records (
     is_active         boolean NOT NULL DEFAULT true
 );
 
+-- Догоняющие колонки (идемпотентно): структурированные атрибуты/связи/даты.
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS attribute_groups jsonb;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS attribute_tags text[] NOT NULL DEFAULT '{}';
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS awards jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS payment_methods text[] NOT NULL DEFAULT '{}';
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS accessibility text[] NOT NULL DEFAULT '{}';
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS data_currency text;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS links_ext jsonb;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS dates jsonb;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS has_goods boolean;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS has_pinned_goods boolean;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS has_discount boolean;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS is_promoted boolean;
+ALTER TABLE p2gis.records ADD COLUMN IF NOT EXISTS poi_category text;
+
 CREATE INDEX IF NOT EXISTS idx_p2gis_records_city_code ON p2gis.records (city_code);
 CREATE INDEX IF NOT EXISTS idx_p2gis_records_org ON p2gis.records (org_id);
 CREATE INDEX IF NOT EXISTS idx_p2gis_records_updated ON p2gis.records (updated_at);
@@ -134,6 +149,29 @@ CREATE TABLE IF NOT EXISTS p2gis.sync_state (
     updated_at       timestamptz NOT NULL DEFAULT now()
 );
 
+-- Прайс-каталог (вкладка «Цены»): товары/услуги с ценами, собранные
+-- с market-backend.api.2gis.ru/5.0/product/items_by_branch (без Chrome).
+CREATE TABLE IF NOT EXISTS p2gis.branch_prices (
+    firm_id      text NOT NULL,
+    product_id   text NOT NULL,
+    name         text NOT NULL,
+    description  text,
+    price        numeric,
+    currency     text,
+    categories   text[] NOT NULL DEFAULT '{}',
+    images       text[] NOT NULL DEFAULT '{}',
+    source       text,
+    updated_at   text,
+    fetched_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (firm_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_p2gis_branch_prices_firm ON p2gis.branch_prices (firm_id);
+CREATE INDEX IF NOT EXISTS idx_p2gis_branch_prices_name_trgm ON p2gis.branch_prices
+    USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_p2gis_branch_prices_cats ON p2gis.branch_prices
+    USING gin (categories);
+
 -- Справочники (канонические в БД-режиме, файлы — зеркало и фолбэк).
 CREATE TABLE IF NOT EXISTS p2gis.cities (
     code         text PRIMARY KEY,
@@ -146,10 +184,11 @@ CREATE TABLE IF NOT EXISTS p2gis.cities (
 );
 
 CREATE INDEX IF NOT EXISTS idx_p2gis_cities_domain ON p2gis.cities (domain);
-CREATE INDEX IF NOT EXISTS idx_p2gis_cities_region ON p2gis.cities (region);
 
--- Миграция для существующих БД (идемпотентно).
+-- Миграция для существующих БД (идемпотентно) — до индексов на новых колонках.
 ALTER TABLE p2gis.cities ADD COLUMN IF NOT EXISTS region text;
+
+CREATE INDEX IF NOT EXISTS idx_p2gis_cities_region ON p2gis.cities (region);
 
 CREATE TABLE IF NOT EXISTS p2gis.rubrics (
     code        text PRIMARY KEY,

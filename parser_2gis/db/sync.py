@@ -43,10 +43,15 @@ INSERT INTO medexpertai.organization_branches
      phone, mobile, website, websites, socials, rubrics, photos, schedule,
      schedule_comment, url, reviews_url, nearest_station, station_distance,
      average_check, rating, review_count, raw_data, status,
+     attribute_groups, attribute_tags, awards, payment_methods, accessibility,
+     data_currency, links_ext, dates, has_goods, has_pinned_goods,
+     has_discount, is_promoted, poi_category,
      created_at, updated_at)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-        %s, %s, %s, 'active', now(), now())
+        %s, %s, %s, 'active',
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+        now(), now())
 ON CONFLICT (firm_id) WHERE firm_id IS NOT NULL DO UPDATE SET
     organization_id=EXCLUDED.organization_id,
     gis_org_id=EXCLUDED.gis_org_id, name=EXCLUDED.name,
@@ -64,7 +69,15 @@ ON CONFLICT (firm_id) WHERE firm_id IS NOT NULL DO UPDATE SET
     station_distance=EXCLUDED.station_distance,
     average_check=EXCLUDED.average_check, rating=EXCLUDED.rating,
     review_count=EXCLUDED.review_count, raw_data=EXCLUDED.raw_data,
-    status='active', updated_at=now()
+    status='active', updated_at=now(),
+    attribute_groups=EXCLUDED.attribute_groups,
+    attribute_tags=EXCLUDED.attribute_tags, awards=EXCLUDED.awards,
+    payment_methods=EXCLUDED.payment_methods,
+    accessibility=EXCLUDED.accessibility, data_currency=EXCLUDED.data_currency,
+    links_ext=EXCLUDED.links_ext, dates=EXCLUDED.dates,
+    has_goods=EXCLUDED.has_goods, has_pinned_goods=EXCLUDED.has_pinned_goods,
+    has_discount=EXCLUDED.has_discount, is_promoted=EXCLUDED.is_promoted,
+    poi_category=EXCLUDED.poi_category
 """
 
 _BRANCH_UPDATE_SQL = """
@@ -74,7 +87,11 @@ UPDATE medexpertai.organization_branches SET
     phone=%s, mobile=%s, website=%s, websites=%s, socials=%s, rubrics=%s,
     photos=%s, schedule=%s, schedule_comment=%s, url=%s, reviews_url=%s,
     nearest_station=%s, station_distance=%s, average_check=%s, rating=%s,
-    review_count=%s, raw_data=%s, status='active', updated_at=now()
+    review_count=%s, raw_data=%s, status='active', updated_at=now(),
+    attribute_groups=%s, attribute_tags=%s, awards=%s, payment_methods=%s,
+    accessibility=%s, data_currency=%s, links_ext=%s, dates=%s,
+    has_goods=%s, has_pinned_goods=%s, has_discount=%s, is_promoted=%s,
+    poi_category=%s
 WHERE id = %s
 """
 
@@ -100,6 +117,9 @@ ON CONFLICT (branch_id, category_id) DO NOTHING
 def _row_to_branch(row) -> dict[str, Any]:
     """Строка p2gis.records -> значения филиала medexpertai."""
     websites = list(row['websites'] or [])
+    # Фолбэк для старых записей: структурированные колонки пусты, но raw_doc
+    # содержит attribute_groups/links/dates — извлекаем на лету при синке.
+    structured = _structured_from_row(row)
     return {
         'firm_id': row['firm_id'],
         'gis_org_id': row['org_id'],
@@ -131,14 +151,90 @@ def _row_to_branch(row) -> dict[str, Any]:
         'rating': row['rating'],
         'review_count': row['review_count'],
         'raw_data': Jsonb(row['raw_doc']),
+        # Структурированные атрибуты (новые поля).
+        'attribute_groups': Jsonb(structured['attribute_groups'] or []),
+        'attribute_tags': list(structured['attribute_tags'] or []),
+        'awards': Jsonb(structured['awards'] or []),
+        'payment_methods': list(structured['payment_methods'] or []),
+        'accessibility': list(structured['accessibility'] or []),
+        'data_currency': structured['data_currency'],
+        'links_ext': Jsonb(structured['links_ext'] or {}),
+        'dates': Jsonb(structured['dates'] or {}),
+        'has_goods': bool(structured['has_goods']),
+        'has_pinned_goods': bool(structured['has_pinned_goods']),
+        'has_discount': bool(structured['has_discount']),
+        'is_promoted': bool(structured['is_promoted']),
+        'poi_category': structured['poi_category'],
     }
 
 
+def _structured_from_row(row) -> dict[str, Any]:
+    """Структурированные поля записи: из новых колонок, иначе из raw_doc."""
+    if row.get('attribute_groups') is not None:
+        return {
+            'attribute_groups': row['attribute_groups'] or [],
+            'attribute_tags': row['attribute_tags'] or [],
+            'awards': row['awards'] or [],
+            'payment_methods': row['payment_methods'] or [],
+            'accessibility': row['accessibility'] or [],
+            'data_currency': row['data_currency'],
+            'links_ext': row['links_ext'] or {},
+            'dates': row['dates'] or {},
+            'has_goods': row['has_goods'],
+            'has_pinned_goods': row['has_pinned_goods'],
+            'has_discount': row['has_discount'],
+            'is_promoted': row['is_promoted'],
+            'poi_category': row['poi_category'],
+        }
+    # Старые записи: колонки NULL — извлекаем из raw_doc.
+    out = {
+        'attribute_groups': [], 'attribute_tags': [], 'awards': [],
+        'payment_methods': [], 'accessibility': [], 'data_currency': None,
+        'links_ext': {}, 'dates': {},
+        'has_goods': None, 'has_pinned_goods': None, 'has_discount': None,
+        'is_promoted': None, 'poi_category': None,
+    }
+    doc = row.get('raw_doc')
+    try:
+        item_raw = ((doc or {}).get('result') or {}).get('items') or []
+        item_raw = item_raw[0] if item_raw else {}
+        if not isinstance(item_raw, dict):
+            return out
+        from ..writer.models import CatalogItem
+        from pydantic import ValidationError
+        try:
+            item = CatalogItem(**item_raw)
+        except ValidationError:
+            return out
+        from ..writer.record import (awards_list, attribute_groups_dict,
+                                     attribute_tags, links_ext_dict,
+                                     _group_names)
+        out['attribute_groups'] = attribute_groups_dict(item)
+        out['attribute_tags'] = attribute_tags(item)
+        out['awards'] = awards_list(item)
+        out['payment_methods'] = _group_names(item, 'Способы оплаты')
+        out['accessibility'] = _group_names(item, 'Доступная среда')
+        dc = _group_names(item, 'Актуальность данных')
+        if dc:
+            out['data_currency'] = dc[0]
+        out['links_ext'] = links_ext_dict(item)
+        dates = item_raw.get('dates') or {}
+        out['dates'] = dates if isinstance(dates, dict) else {}
+        for k in ('has_goods', 'has_pinned_goods', 'has_discount', 'is_promoted', 'poi_category'):
+            out[k] = item_raw.get(k)
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[sync] извлечение структурированных полей из raw_doc: %s', e)
+    return out
+
+
 _RECORD_COLUMNS = ("firm_id, org_id, org_name, name, description, address, "
-                   "address_comment, city, district, region, country, postcode, lat, lon, "
+                   "address_comment, city, district, district_area, region, country, postcode, lat, lon, "
                    "phone, mobile, websites, socials, rubrics, photos, schedule, "
                    "schedule_comment, url, reviews_url, nearest_station, station_distance, "
-                   "average_check, rating, review_count, raw_doc, updated_at")
+                   "average_check, rating, review_count, raw_doc, updated_at, "
+                   "attribute_groups, attribute_tags, awards, payment_methods, accessibility, "
+                   "data_currency, links_ext, dates, has_goods, has_pinned_goods, "
+                   "has_discount, is_promoted, poi_category")
 
 
 def _fetch_records(since: Optional[datetime], limit: int,
@@ -271,7 +367,11 @@ def _branch_insert_params(org_pk: int, b: dict) -> list[Any]:
             b['website'], b['websites'], b['socials'], b['rubrics'], b['photos'],
             b['schedule'], b['schedule_comment'], b['url'], b['reviews_url'],
             b['nearest_station'], b['station_distance'], b['average_check'],
-            b['rating'], b['review_count'], b['raw_data']]
+            b['rating'], b['review_count'], b['raw_data'],
+            b['attribute_groups'], b['attribute_tags'], b['awards'],
+            b['payment_methods'], b['accessibility'], b['data_currency'],
+            b['links_ext'], b['dates'], b['has_goods'], b['has_pinned_goods'],
+            b['has_discount'], b['is_promoted'], b['poi_category']]
 
 
 def _branch_update_params(b: dict) -> list[Any]:
@@ -281,7 +381,11 @@ def _branch_update_params(b: dict) -> list[Any]:
             b['websites'], b['socials'], b['rubrics'], b['photos'], b['schedule'],
             b['schedule_comment'], b['url'], b['reviews_url'], b['nearest_station'],
             b['station_distance'], b['average_check'], b['rating'], b['review_count'],
-            b['raw_data']]
+            b['raw_data'],
+            b['attribute_groups'], b['attribute_tags'], b['awards'],
+            b['payment_methods'], b['accessibility'], b['data_currency'],
+            b['links_ext'], b['dates'], b['has_goods'], b['has_pinned_goods'],
+            b['has_discount'], b['is_promoted'], b['poi_category']]
 
 
 def sync_status() -> dict[str, Any]:
@@ -367,3 +471,63 @@ def sync_to_medexpertai(since: Optional[datetime] = None, limit: int = _DEFAULT_
             'categories_linked': stats['categories_linked'],
             'records': len(rows), 'cursor': last_updated.isoformat() if last_updated else None,
             'deactivated': deactivate}
+
+
+# ============================================================
+# Синхронизация прайс-каталога p2gis.branch_prices -> medexpertai.branch_prices
+# ============================================================
+
+_BRANCH_PRICES_INSERT_SQL = """
+INSERT INTO medexpertai.branch_prices
+    (branch_id, firm_id, product_id, name, description, price, currency,
+     categories, images, source, updated_at, fetched_at)
+SELECT b.id, p.firm_id, p.product_id, p.name, p.description, p.price,
+       p.currency, p.categories, p.images, p.source, p.updated_at, p.fetched_at
+FROM p2gis.branch_prices p
+JOIN medexpertai.organization_branches b ON b.firm_id = p.firm_id AND b.status = 'active'
+ON CONFLICT (branch_id, product_id) DO UPDATE SET
+    name=EXCLUDED.name, description=EXCLUDED.description,
+    price=EXCLUDED.price, currency=EXCLUDED.currency,
+    categories=EXCLUDED.categories, images=EXCLUDED.images,
+    source=EXCLUDED.source, updated_at=EXCLUDED.updated_at,
+    fetched_at=EXCLUDED.fetched_at
+"""
+
+_BRANCH_PRICES_SUMMARY_SQL = """
+UPDATE medexpertai.organization_branches b SET
+    min_price = sub.min_price,
+    max_price = sub.max_price,
+    prices_updated_at = sub.updated_at,
+    updated_at = now()
+FROM (
+    SELECT branch_id,
+           min(price) AS min_price,
+           max(price) AS max_price,
+           max(updated_at) AS updated_at
+    FROM medexpertai.branch_prices
+    GROUP BY branch_id
+) sub
+WHERE sub.branch_id = b.id
+  AND b.min_price IS DISTINCT FROM sub.min_price
+  AND b.max_price IS DISTINCT FROM sub.max_price
+  AND b.prices_updated_at IS DISTINCT FROM sub.updated_at
+"""
+
+
+def sync_prices_to_medexpertai() -> dict[str, Any]:
+    """Переносит p2gis.branch_prices в medexpertai + сводит min/max цены филиалов."""
+    if not enabled():
+        raise RuntimeError('БД не настроена (задайте P2GIS_DB_URL)')
+    with connection() as conn:
+        with conn.transaction():
+            cur = conn.cursor()
+            cur.execute(_BRANCH_PRICES_INSERT_SQL)
+            upserted = cur.rowcount
+            cur.execute(_BRANCH_PRICES_SUMMARY_SQL)
+            updated = cur.rowcount
+            cur.execute("SELECT count(*) AS c FROM p2gis.branch_prices")
+            total = cur.fetchone()['c']
+    logger.info('[sync] прайсы: upsert=%d, сводка филиалов=%d (всего позиций %d)',
+                upserted, updated, total)
+    return {'prices_upserted': upserted, 'branches_summarized': updated,
+            'prices_total': total}

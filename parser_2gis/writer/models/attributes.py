@@ -19,6 +19,9 @@ class Attribute(BaseModel):
     # Ссылка на иконку атрибута
     icon_url: Optional[str] = None
 
+    # Признак награды/премии (группа «Премия 2ГИС»: «Лучший фитнес-клуб 2026»)
+    is_award: Optional[bool] = None
+
 
 class AttributeGroup(BaseModel):
     """Группа атрибутов (например «Способы оплаты», «Фитнес-клубы и тренажёрные залы»)."""

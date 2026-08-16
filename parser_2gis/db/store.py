@@ -35,10 +35,15 @@ INSERT INTO p2gis.records (
     primary_rubric, rubric_section, sub_rubrics, rating, review_count,
     org_rating, org_review_count, average_check, schedule, schedule_comment,
     photos, url, reviews_url, branch_count, nearest_station, station_distance,
-    search_text, raw_doc, last_job_id)
+    search_text, raw_doc, last_job_id,
+    attribute_groups, attribute_tags, awards, payment_methods, accessibility,
+    data_currency, links_ext, dates, has_goods, has_pinned_goods,
+    has_discount, is_promoted, poi_category)
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
         %s, %s, %s)
 ON CONFLICT (firm_id) DO UPDATE SET
     org_id=EXCLUDED.org_id, org_name=EXCLUDED.org_name, name=EXCLUDED.name,
@@ -60,7 +65,15 @@ ON CONFLICT (firm_id) DO UPDATE SET
     branch_count=EXCLUDED.branch_count, nearest_station=EXCLUDED.nearest_station,
     station_distance=EXCLUDED.station_distance, search_text=EXCLUDED.search_text,
     raw_doc=EXCLUDED.raw_doc,
-    last_job_id=EXCLUDED.last_job_id, updated_at=now(), is_active=true
+    last_job_id=EXCLUDED.last_job_id, updated_at=now(), is_active=true,
+    attribute_groups=EXCLUDED.attribute_groups,
+    attribute_tags=EXCLUDED.attribute_tags, awards=EXCLUDED.awards,
+    payment_methods=EXCLUDED.payment_methods,
+    accessibility=EXCLUDED.accessibility, data_currency=EXCLUDED.data_currency,
+    links_ext=EXCLUDED.links_ext, dates=EXCLUDED.dates,
+    has_goods=EXCLUDED.has_goods, has_pinned_goods=EXCLUDED.has_pinned_goods,
+    has_discount=EXCLUDED.has_discount, is_promoted=EXCLUDED.is_promoted,
+    poi_category=EXCLUDED.poi_category
 """
 
 
@@ -112,6 +125,19 @@ def _record_to_row(rec: dict[str, Any], doc: Any, job_id: Optional[str]) -> Opti
         list(rec.get('photos') or []), rec.get('url'), rec.get('reviews_url'),
         rec.get('branch_count'), rec.get('nearest_station'), rec.get('station_distance'),
         search_text, Jsonb(doc), job_id,
+        Jsonb(rec.get('attribute_groups') or []),
+        list(rec.get('attribute_tags') or []),
+        Jsonb(rec.get('awards') or []),
+        list(rec.get('payment_methods') or []),
+        list(rec.get('accessibility') or []),
+        rec.get('data_currency'),
+        Jsonb(rec.get('links_ext') or {}),
+        Jsonb(rec.get('dates') or {}),
+        bool(rec.get('has_goods')),
+        bool(rec.get('has_pinned_goods')),
+        bool(rec.get('has_discount')),
+        bool(rec.get('is_promoted')),
+        rec.get('poi_category'),
     )
 
 

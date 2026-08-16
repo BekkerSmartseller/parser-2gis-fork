@@ -236,3 +236,35 @@ def test_sync_to_medexpertai_no_db(monkeypatch):
 def test_apply_schema_no_dsn(monkeypatch):
     monkeypatch.setattr(db_conn, 'dsn', lambda: '')
     assert db_conn.apply_schema() is False
+
+
+# --- прайс-каталог (market API, без сети) ---
+
+def test_prices_item_normalization():
+    from parser_2gis.db import prices as db_prices
+    res = {'total': 2, 'updated_at': 'Обновлено 16 октября 2025', 'items': [
+        {'product': {'id': 'p1', 'name': 'Кинезис', 'description': 'Тренировка',
+                     'images': ['https://img/x.jpg'],
+                     'categories': [{'id': 'c1', 'label': 'Фитнес'}],
+                     'source': {'code': 'LkPriceItemManual'}},
+         'offer': {'price': 1700, 'currency': 'RUB',
+                   'price_value': {'fixed': {'value': 1700, 'currency': 'RUB'}}}},
+        {'product': {'id': 'p2', 'name': 'Анализ ДНК', 'categories': []},
+         'offer': {'price': '2 500', 'currency': 'RUB',
+                   'price_value': {'fixed': {'value': 2500, 'currency': 'RUB'}}}},
+    ]}
+    items = db_prices._items_from_result(res)
+    assert len(items) == 2
+    assert items[0]['price'] == 1700.0
+    assert items[0]['categories'] == ['Фитнес']
+    assert items[0]['source'] == 'LkPriceItemManual'
+    assert items[1]['price'] == 2500.0  # строка с пробелом
+
+
+def test_prices_num():
+    from parser_2gis.db import prices as db_prices
+    assert db_prices._num('1 500 ₽') == 1500.0
+    assert db_prices._num(1700) == 1700.0
+    assert db_prices._num('от 30 000') == 30000.0
+    assert db_prices._num(None) is None
+    assert db_prices._num('без цены') is None

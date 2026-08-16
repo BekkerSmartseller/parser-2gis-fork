@@ -65,3 +65,64 @@ def test_extract_record_no_websites():
     ])
     r = extract_record(doc)
     assert r['contacts']['websites'] == []
+
+
+def _attr_doc():
+    return {
+        'result': {'items': [{
+            'id': '9148465024074680_xyz',
+            'locale': 'ru_RU',
+            'type': 'firm',
+            'name': 'World Class',
+            'attribute_groups': [
+                {'name': 'Фитнес-клубы и тренажёрные залы', 'attributes': [
+                    {'id': 'a1', 'tag': 'fitness_details_yoga', 'name': 'Йога'},
+                    {'id': 'a2', 'tag': 'fitness_year_unltd_subscription_price',
+                     'name': 'Годовой абонемент от 30000 ₽'},
+                ]},
+                {'name': 'Способы оплаты', 'attributes': [
+                    {'tag': 'general_payment_type_card', 'name': 'Оплата картой'},
+                ]},
+                {'name': 'Актуальность данных', 'attributes': [
+                    {'tag': 'data_currency_data_relevance_data_is_current',
+                     'name': 'Данные актуальны'},
+                ]},
+                {'name': 'Премия 2ГИС', 'attributes': [
+                    {'tag': 'awards_awards2026_thebestfitnessclub2026', 'name': 'Лучший фитнес-клуб 2026',
+                     'is_award': True},
+                ]},
+            ],
+            'links': {
+                'nearest_stations': [{'id': 's1', 'name': 'Маршала Василевского',
+                                      'distance': 180, 'route_types': ['bus']}],
+                'nearest_metro': [{'id': 'm1', 'distance': 900}],
+                'nearest_parking': [{'id': 'p1'}],
+                'entrances': [{'id': 'e1', 'is_primary': True}],
+            },
+            'dates': {'created_at': '2010-03-05T00:00:00Z',
+                      'updated_at': '2026-07-28T03:00:00Z'},
+            'has_goods': True, 'has_pinned_goods': True, 'has_discount': False,
+            'is_promoted': False, 'poi_category': 'pool',
+        }]}
+    }
+
+
+def test_extract_record_structured_attrs():
+    """Новые структурированные поля: attribute_groups/tags/awards/payment/связи."""
+    r = extract_record(_attr_doc())
+    assert r is not None
+    assert 'fitness_details_yoga' in r['attribute_tags']
+    assert 'general_payment_type_card' in r['attribute_tags']
+    assert r['payment_methods'] == ['Оплата картой']
+    assert r['data_currency'] == 'Данные актуальны'
+    awards = r['awards']
+    assert any(a.get('name') == 'Лучший фитнес-клуб 2026' for a in awards)
+    # плоский attributes сохранён (совместимость)
+    assert 'Йога' in r['attributes']
+    # связи
+    assert r['links_ext']['nearest_stations'][0]['name'] == 'Маршала Василевского'
+    assert r['links_ext']['nearest_metro'][0]['distance'] == 900
+    assert r['links_ext']['nearest_parking'] == ['p1']
+    assert r['dates']['updated_at'] == '2026-07-28T03:00:00Z'
+    assert r['has_goods'] is True
+    assert r['poi_category'] == 'pool'
