@@ -46,3 +46,26 @@ def test_doc_firm_ids():
     assert MainParser._doc_firm_ids(doc) == ['70000001030060198', '985690699468019']
     assert MainParser._doc_firm_ids({'result': {'items': []}}) == []
     assert MainParser._doc_firm_ids({}) == []
+
+
+def test_note_collected_tracks_orgs():
+    """_note_collected ведёт счёт собранных фирм по org.id (для пропуска сетей)."""
+    from parser_2gis.parser.parsers.main import MainParser
+    p = MainParser.__new__(MainParser)
+    p._collected_by_org = {}
+    p._branch_count_by_org = {}
+    p._new_seen = set()
+
+    doc = {'result': {'items': [
+        {'id': '5630027815194140_abc', 'org': {'id': '5630036405127738', 'branch_count': 4}},
+        {'id': '5630027815194141_def', 'org': {'id': '5630036405127738', 'branch_count': 4}},
+    ]}}
+    p._note_collected(doc)
+    assert p._collected_by_org['5630036405127738'] == {'5630027815194140', '5630027815194141'}
+    assert p._branch_count_by_org['5630036405127738'] == 4
+    assert p._new_seen == {'5630027815194140', '5630027815194141'}
+
+    # без org.id — только seen
+    p._note_collected({'result': {'items': [{'id': '70000001000000001_x'}]}})
+    assert '70000001000000001' in p._new_seen
+    assert '70000001000000001' not in p._collected_by_org.get('70000001000000001', set())

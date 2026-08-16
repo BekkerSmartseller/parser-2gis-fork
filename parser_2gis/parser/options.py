@@ -35,3 +35,4 @@ class ParserOptions(BaseModel):
     max_concurrent: PositiveInt = 3
     proxy_mode: str = 'round_robin'
     collect_branches: bool = True
+    skip_seen_firms: bool = False

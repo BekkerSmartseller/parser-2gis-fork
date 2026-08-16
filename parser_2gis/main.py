@@ -130,6 +130,7 @@ def parse_arguments() -> tuple[argparse.Namespace, Configuration]:
     p_parser.add_argument('--parser.skip-404-response', metavar='{yes,no}', help='Пропускать ссылки вернувшие сообщение "Точных совпадений нет / Не найдено"')
     p_parser.add_argument('--parser.delay_between_clicks', metavar='{0,100,...}', help='Задержка между кликами по записям (миллисекунд)')
     p_parser.add_argument('--parser.collect-branches', metavar='{yes,no}', help='Собирать все филиалы сетей (страница /branches/)')
+    p_parser.add_argument('--parser.skip-seen-firms', metavar='{yes,no}', help='Пропускать организации, уже собранные в прошлых задачах (кэш seen_firms)')
 
     other_parser = arg_parser.add_argument_group('Прочие аргументы')
     other_parser.add_argument('--writer.verbose', metavar='{yes,no}', help='Отображать наименования позиций во время парсинга')

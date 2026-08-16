@@ -168,6 +168,8 @@ class AdvancedOptions(BaseModel):
     encoding: Optional[str] = Field(default=None, description='Кодировка файла (utf-8, cp1251, ...)')
     collect_branches: Optional[bool] = Field(
         default=None, description='Собирать все филиалы сетей (со страницы /branches/)')
+    skip_seen_firms: Optional[bool] = Field(
+        default=None, description='Пропускать организации из прошлых задач (кэш seen_firms)')
 
 
 class StartRequest(BaseModel):
@@ -438,6 +440,8 @@ def _build_config(data: dict[str, Any]) -> Configuration:
             config.writer.encoding = str(adv['encoding'])
         if adv.get('collect_branches') is not None:
             config.parser.collect_branches = bool(adv['collect_branches'])
+        if adv.get('skip_seen_firms') is not None:
+            config.parser.skip_seen_firms = bool(adv['skip_seen_firms'])
 
     f = data.get('filters', {}) or {}
     config.filters.dedup_franchises = bool(f.get('dedup_franchises'))

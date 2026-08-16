@@ -218,10 +218,10 @@ class ChromeRemote:
                         tab_detached = True
                         self._chrome_tab._stopped.set()
 
-                    # Пауза между пингами 5с (не 0.5с): монитор — это health-check,
-                    # а не живая очередь; частый пинг спамит лог запросами GET /json.
-                    # При stop() событие _stopped ставится сразу — поток выходит мгновенно.
-                    self._chrome_tab._stopped.wait(5.0)
+                    # Пауза между пингами 15с: монитор — это health-check, а не живая
+                    # очередь; частый пинг спамит лог запросами GET /json. При stop()
+                    # событие _stopped ставится сразу — поток выходит мгновенно.
+                    self._chrome_tab._stopped.wait(15.0)
                 except httpx.ConnectError:
                     break
 

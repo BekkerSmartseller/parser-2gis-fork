@@ -51,6 +51,13 @@ class MainParser:
         blocked_urls = blocked_requests(extended=chrome_options.disable_images)
         self._chrome_remote.add_blocked_requests(blocked_urls)
 
+        # Оптимизация: считаем собранные фирмы по организациям (org.id == network_id
+        # в /branches/{id}), чтобы не заходить на уже полностью собранные сети.
+        self._collected_by_org: dict[str, set[str]] = {}
+        self._branch_count_by_org: dict[str, int] = {}
+        # Новые фирмы для кэша seen_firms (межзадачный дедуп, опционально).
+        self._new_seen: set[str] = set()
+
     @staticmethod
     def url_pattern():
         """URL pattern for the parser.
@@ -130,6 +137,31 @@ class MainParser:
                     pass
                 return
             time.sleep(0.1)
+
+    @staticmethod
+    def _load_seen_firms() -> set[str]:
+        """Читает кэш собранных фирм (по одной в строке)."""
+        try:
+            from ...paths import user_path
+            p = user_path() / 'seen_firms.txt'
+            if p.is_file():
+                return {ln.strip() for ln in p.read_text(encoding='utf-8').splitlines() if ln.strip()}
+        except Exception:  # noqa: BLE001
+            pass
+        return set()
+
+    def _save_seen_firms(self, new_ids: set[str]) -> None:
+        """Дописывает новые фирмы в кэш seen_firms (merge с существующими)."""
+        try:
+            from ...paths import user_path
+            p = user_path() / 'seen_firms.txt'
+            existing = set()
+            if p.is_file():
+                existing = {ln.strip() for ln in p.read_text(encoding='utf-8').splitlines() if ln.strip()}
+            merged = sorted(existing | set(new_ids))
+            p.write_text('\n'.join(merged), encoding='utf-8')
+        except Exception as e:  # noqa: BLE001
+            logger.warning('Не удалось сохранить кэш seen_firms: %s', e)
 
     def _get_available_pages(self) -> dict[int, DOMNode]:
         """Get available pages to navigate."""
@@ -214,6 +246,24 @@ class MainParser:
                 ids.append(iid.split('_')[0])
         return ids
 
+    def _note_collected(self, doc: dict) -> None:
+        """Фиксирует собранную фирму и её организацию.
+
+        org.id в документе == network_id в URL /branches/{id}, поэтому по нему
+        можно определить, полностью ли сеть уже собрана из выдачи, и для
+        кэша seen_firms (межзадачный дедуп)."""
+        for item in ((doc or {}).get('result') or {}).get('items') or []:
+            firm_id = str(item.get('id') or '').split('_')[0]
+            org = item.get('org') or {}
+            oid = org.get('id')
+            if firm_id:
+                self._new_seen.add(firm_id)
+            if oid:
+                self._collected_by_org.setdefault(str(oid), set()).add(firm_id)
+                bc = org.get('branch_count')
+                if bc:
+                    self._branch_count_by_org[str(oid)] = int(bc)
+
     def _drain_byid_docs(self, seconds: float, id_prefix: Optional[str] = None) -> list[dict]:
         """Собирает byid-ДОКУМЕНТЫ (полные пакеты `{meta, result}`) из очереди за `seconds`.
 
@@ -278,7 +328,7 @@ class MainParser:
             self._chrome_remote.perform_click(node)
             if self._options.delay_between_clicks:
                 self._chrome_remote.wait(self._options.delay_between_clicks / 1000)
-            docs = self._drain_byid_docs(3, id_prefix=firm_id)
+            docs = self._drain_byid_docs(1.5, id_prefix=firm_id)
             if docs:
                 return docs
         return []
@@ -329,17 +379,15 @@ class MainParser:
                 self._chrome_remote.clear_requests()
                 self._chrome_remote.navigate(firm_url, referer='https://google.com',
                                              timeout=120)
-                try:
-                    self._wait_requests_finished()
-                except Exception:  # noqa: BLE001
-                    pass
-                docs = self._drain_byid_docs(5, id_prefix=org_id)
+                time.sleep(1.5)  # не ждём все XHR — фирм-страница резолвится быстро
+                docs = self._drain_byid_docs(3, id_prefix=org_id)
                 if not docs:
                     logger.warning('[branches] организация %s не найдена в 2GIS '
                                    '(фирм-страница не вернула документ с этим id)',
                                    org_id)
                 for doc in docs:
                     writer.write(doc)
+                    self._note_collected(doc)
                     collected_ids.update(self._doc_firm_ids(doc))
                     collected_records += 1
                     if collected_records >= max_records:
@@ -353,13 +401,12 @@ class MainParser:
             collected_ids.add(firm_id)
 
             # Возврат на страницу списка филиалов (свежий DOM после клика).
+            # Карточки филиалов SSR-ятся сразу — ждать все XHR (markers, profile)
+            # не нужно, короткой паузы достаточно.
             self._chrome_remote.clear_requests()
             self._chrome_remote.navigate(branches_url, referer='https://google.com',
                                          timeout=120)
-            try:
-                self._wait_requests_finished()
-            except Exception:  # noqa: BLE001
-                pass
+            time.sleep(1.0)
 
             node = self._find_firm_card(firm_id)
             if node is None:
@@ -371,6 +418,7 @@ class MainParser:
                 logger.warning('[branches] по карточке %s byid не получен', firm_id)
             for doc in docs:
                 writer.write(doc)
+                self._note_collected(doc)
                 collected_ids.update(self._doc_firm_ids(doc))
                 collected_records += 1
                 if collected_records >= max_records:
@@ -380,10 +428,7 @@ class MainParser:
     def _parse_branches_url(self, writer: FileWriter) -> None:
         """Парсинг входного URL страницы филиалов сети (/branches/...)."""
         self._chrome_remote.navigate(self._url, referer='https://google.com', timeout=120)
-        try:
-            self._wait_requests_finished()
-        except Exception:  # noqa: BLE001
-            pass
+        time.sleep(1.5)
         m = re.search(r'/branches/(\d+)/firm/(\d+)', self._url)
         only_firm_id = m.group(2) if m else None
         logger.info('[branches] входная ссылка филиалов, фирма-фильтр: %s', only_firm_id or 'все')
@@ -414,6 +459,12 @@ class MainParser:
             walk_page_number = int(page_match.group('page_number'))
         else:
             walk_page_number = None
+
+        # Кэш уже собранных фирм (межзадачный дедуп, опция skip_seen_firms).
+        skip_seen_firms: set[str] = set()
+        if self._options.skip_seen_firms:
+            skip_seen_firms = self._load_seen_firms()
+            logger.info('[parser] загружен кэш seen_firms: %d фирм', len(skip_seen_firms))
 
         # Go URL
         self._chrome_remote.navigate(url, referer='https://google.com', timeout=120)
@@ -495,6 +546,12 @@ class MainParser:
             if not walk_page_number:
                 # Iterate through gathered links
                 for link in links:
+                    if skip_seen_firms:
+                        mf = re.search(r'/firm/(\d+)', link.attributes['href'])
+                        if mf and mf.group(1) in skip_seen_firms:
+                            logger.info('Фирма %s уже собрана в прошлых задачах — пропуск',
+                                        mf.group(1))
+                            continue
                     for _ in range(3):  # 3 attempts to get response
                         # Click the link to provoke request
                         # with a auth key and secret arguments
@@ -527,6 +584,7 @@ class MainParser:
                     if doc:
                         # Write API document into a file
                         writer.write(doc)
+                        self._note_collected(doc)
                         collected_ids.update(self._doc_firm_ids(doc))
                         collected_records += 1
                     else:
@@ -569,17 +627,31 @@ class MainParser:
         if self._options.collect_branches and branch_urls \
                 and collected_records < self._options.max_records:
             logger.info('[branches] найдено сетей для сбора филиалов: %d', len(branch_urls))
+            visited_nets: set[str] = set()  # дедуп по network_id (URL бывает с городом и без)
             for branch_url in sorted(branch_urls):
                 if collected_records >= self._options.max_records:
                     break
+                # Пропускаем сети, все филиалы которых уже собраны из выдачи:
+                # org.id в документе == network_id в /branches/{id}.
+                m_net = re.search(r'/branches/(\d+)', branch_url)
+                nid = m_net.group(1) if m_net else None
+                if nid:
+                    if nid in visited_nets:
+                        logger.info('[branches] сеть %s уже обрабатывалась — пропуск дубля',
+                                    nid)
+                        continue
+                    visited_nets.add(nid)
+                    bc = self._branch_count_by_org.get(nid)
+                    have = len(self._collected_by_org.get(nid, set()))
+                    if bc is not None and have >= bc:
+                        logger.info('[branches] сеть %s полностью собрана из выдачи '
+                                    '(%d/%d) — пропуск', nid, have, bc)
+                        continue
                 logger.info('[branches] сбор филиалов сети: %s', branch_url)
                 self._chrome_remote.clear_requests()
                 self._chrome_remote.navigate(branch_url, referer='https://google.com',
                                              timeout=120)
-                try:
-                    self._wait_requests_finished()
-                except Exception:  # noqa: BLE001
-                    pass
+                time.sleep(1.0)  # карточки филиалов SSR-ятся — все XHR не ждём
                 collected_records = self._collect_branch_docs(
                     writer, visited_links, collected_ids, collected_records,
                     self._options.max_records)
@@ -588,6 +660,8 @@ class MainParser:
                     return
 
     def close(self) -> None:
+        if self._options.skip_seen_firms and self._new_seen:
+            self._save_seen_firms(self._new_seen)
         self._chrome_remote.stop()
 
     def __enter__(self) -> MainParser:
