@@ -90,6 +90,8 @@ class ParseJob:
         self._started_at = datetime.now(timezone.utc)
         self._parser = None
         self._cancelled = False
+        self._paused = False
+        self._pause_cond = threading.Condition()
         self.status = 'queued'  # queued | running | done | stopped | error
         self.logs: list[str] = []
         self.error: Optional[str] = None
@@ -98,6 +100,11 @@ class ParseJob:
     @property
     def running(self) -> bool:
         return self.status == 'running'
+
+    @property
+    def paused(self) -> bool:
+        """Задача на паузе (жду resume между URL)."""
+        return self._paused
 
     @property
     def count(self) -> int:
@@ -124,11 +131,33 @@ class ParseJob:
 
     def stop(self) -> None:
         self._cancelled = True
+        with self._pause_cond:
+            self._pause_cond.notify_all()
         if self._parser:
             try:
                 self._parser.close()
             except Exception:
                 pass
+
+    def pause(self) -> bool:
+        """Ставит задачу на паузу — парсинг встанет между URL.
+
+        В середине страницы Chrome не трогаем (небезопасно), пауза
+        применяется перед следующей ссылкой."""
+        if self.status != 'running':
+            return False
+        with self._pause_cond:
+            self._paused = True
+        return True
+
+    def resume(self) -> bool:
+        """Снимает паузу. True, если задача действительно была на паузе."""
+        with self._pause_cond:
+            if not self._paused:
+                return False
+            self._paused = False
+            self._pause_cond.notify_all()
+        return True
 
     def cancel_queued(self) -> None:
         """Mark a queued job as cancelled (never started)."""
@@ -171,6 +200,13 @@ class ParseJob:
                                  daemon=True).start()
             with writer:
                 for url in self._urls:
+                    if self._cancelled:
+                        break
+                    # Пауза: ждём resume/stop между URL (в середине страницы
+                    # Chrome не останавливаем — небезопасно).
+                    with self._pause_cond:
+                        while self._paused and not self._cancelled:
+                            self._pause_cond.wait(2)
                     if self._cancelled:
                         break
                     logger.info('Парсинг ссылки %s', url)
@@ -334,6 +370,18 @@ class JobManager:
             job.stop()
         return True
 
+    def pause(self, job_id: Optional[str] = None) -> bool:
+        job = self.get(job_id)
+        if not job:
+            return False
+        return job.pause()
+
+    def resume(self, job_id: Optional[str] = None) -> bool:
+        job = self.get(job_id)
+        if not job:
+            return False
+        return job.resume()
+
     def clear(self, job_id: Optional[str] = None) -> bool:
         job = self.get(job_id)
         if not job:
@@ -348,7 +396,8 @@ class JobManager:
 
     def list_jobs(self) -> list[dict]:
         with self._lock:
-            return [{'id': j.id, 'status': j.status, 'count': j.count}
+            return [{'id': j.id, 'status': j.status, 'count': j.count,
+                     'paused': j.paused}
                     for j in self._jobs.values()]
 
     def stop_all(self) -> None:

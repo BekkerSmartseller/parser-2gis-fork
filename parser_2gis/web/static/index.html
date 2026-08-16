@@ -381,6 +381,8 @@
 
     <div class="actions-bar">
       <button class="btn-run" id="run" data-i18n="run">Бастау</button>
+      <button class="btn-stop" id="pause" style="display:none" data-i18n="pause">Тоқтата тұру</button>
+      <button class="btn-stop" id="resume" style="display:none" data-i18n="resume">Жалғастыру</button>
       <button class="btn-stop" id="stop" style="display:none" data-i18n="stop">Тоқтату</button>
     </div>
   
@@ -450,7 +452,7 @@
       a_comments:'Ұяшықтардағы түсініктемелер (жұмыс уақыты т.б.)', a_rmempty:'Бос бағандарды жою',
       a_rmdup:'Қайталануларды жою', a_delay:'Басу кідірісі, мс', a_cols:'Өріске баған саны', a_mem:'RAM шегі, МБ',
       a_enc:'Кодтау', hist_title:'🕘 Парсинг тарихы', hist_empty:'Әзірге бос. Аяқталған парсингтер осында сақталады.',
-      run:'Бастау', stop:'Тоқтату', search_ph:'Нәтижелерден іздеу…', sort_title:'Сұрыптау', sort_default:'Сұрыптаусыз',
+      run:'Бастау', stop:'Тоқтату', pause:'Тоқтата тұру', resume:'Жалғастыру', search_ph:'Нәтижелерден іздеу…', sort_title:'Сұрыптау', sort_default:'Сұрыптаусыз',
       sort_name_asc:'Атауы А–Я', sort_name_desc:'Атауы Я–А', sort_rating_desc:'Рейтинг ↓', sort_rating_asc:'Рейтинг ↑',
       sort_reviews_desc:'Пікірлер ↓', sort_reviews_asc:'Пікірлер ↑', sort_rubric:'Айдар бойынша А–Я',
       dl_label:'Жүктеу:', clear:'✕ Тазалау', clear_title:'Нәтижелерді тазалау (Тарихта қалады)',
@@ -459,7 +461,7 @@
       no_rubric_opt:'— айдарсыз —', add_links:'Сілтемелерді қосу', added:'Қосылды: ', wa_tpl_ph:'Хабарлама мәтіні…',
       found:'табылды', collected:'жиналды…', from_history:'(тарихтан)', merged:'(біріктірілді, дубльдер жойылды)',
       collecting:'Деректер жиналуда…', empty_notfound:'Сұраныс бойынша ештеңе табылмады.',
-      st_ready:'Дайын', st_running:'Парсинг жүруде…', st_done:'Дайын', st_stopped:'Тоқтатылды', st_error:'Қате',
+      st_ready:'Дайын', st_running:'Парсинг жүруде…', st_paused:'Тоқтата тұрылды', st_done:'Дайын', st_stopped:'Тоқтатылды', st_error:'Қате',
       mark:'Хабарластық', mark_on:'✓ Хабарластық', note_ph:'Ескертпе…', hist_open:'Ашу',
       hist_merge:'⛁ Таңдалғанды біріктіру (дедуп)', recs_short:'жзб.', more:'тағы',
       a_need_url:'Кемінде бір 2GIS сілтемесін көрсетіңіз', a_need_query:'Сұранысты енгізіңіз',
@@ -493,7 +495,7 @@
       a_comments:'Комментарии в ячейках (часы работы и т.д.)', a_rmempty:'Удалять пустые колонки',
       a_rmdup:'Удалять дубликаты', a_delay:'Задержка кликов, мс', a_cols:'Колонок на поле', a_mem:'Лимит RAM, МБ',
       a_enc:'Кодировка', hist_title:'🕘 История парсинга', hist_empty:'Пока пусто. Завершённые парсинги сохранятся здесь.',
-      run:'Запустить', stop:'Остановить', search_ph:'Поиск в результатах…', sort_title:'Сортировка', sort_default:'Без сортировки',
+      run:'Запустить', stop:'Остановить', pause:'Пауза', resume:'Продолжить', search_ph:'Поиск в результатах…', sort_title:'Сортировка', sort_default:'Без сортировки',
       sort_name_asc:'Название А–Я', sort_name_desc:'Название Я–А', sort_rating_desc:'Рейтинг ↓', sort_rating_asc:'Рейтинг ↑',
       sort_reviews_desc:'Отзывов ↓', sort_reviews_asc:'Отзывов ↑', sort_rubric:'По рубрике А–Я',
       dl_label:'Скачать:', clear:'✕ Очистить', clear_title:'Очистить результаты (останутся в Истории)',
@@ -502,7 +504,7 @@
       no_rubric_opt:'— без рубрики —', add_links:'Добавить ссылки', added:'Добавлено: ', wa_tpl_ph:'Текст сообщения…',
       found:'найдено', collected:'собрано…', from_history:'(из истории)', merged:'(объединено, дубли убраны)',
       collecting:'Собираем данные…', empty_notfound:'Ничего не найдено по запросу.',
-      st_ready:'Готов', st_running:'Идёт парсинг…', st_done:'Готово', st_stopped:'Остановлено', st_error:'Ошибка',
+      st_ready:'Готов', st_running:'Идёт парсинг…', st_paused:'На паузе', st_done:'Готово', st_stopped:'Остановлено', st_error:'Ошибка',
       mark:'Связались', mark_on:'✓ Связались', note_ph:'Заметка…', hist_open:'Открыть',
       hist_merge:'⛁ Объединить выбранные (дедуп)', recs_short:'зап.', more:'ещё',
       a_need_url:'Укажите хотя бы одну ссылку 2GIS', a_need_query:'Введите запрос',
@@ -605,8 +607,8 @@
 
   function setStatus(s){
     lastStatus=s; var pill=$('pill'), tx=$('pilltext');
-    pill.className='pill'; var map={running:['run','st_running'],done:['done','st_done'],
-      stopped:['stop','st_stopped'],error:['err','st_error'],idle:['','st_ready']};
+    pill.className='pill'; var map={running:['run','st_running'],paused:['stop','st_paused'],
+      done:['done','st_done'],stopped:['stop','st_stopped'],error:['err','st_error'],idle:['','st_ready']};
     var m=map[s]||map.idle; if(m[0])pill.classList.add(m[0]); tx.textContent=t(m[1]);
   }
 
@@ -701,10 +703,17 @@
       cursor=d.cursor;
       if(d.logs && d.logs.length){var lb=$('logbox'); lb.textContent+=(lb.textContent?'\n':'')+d.logs.join('\n'); lb.scrollTop=lb.scrollHeight;}
       $('count').textContent=d.count?(d.count+' '+(d.running?t('collected'):t('found'))):'';
-      setStatus(d.status);
-      if(!d.running){
+      if(d.running){
+        setStatus(d.paused?'paused':'running');
+        $('run').style.display='none';
+        $('pause').style.display = d.paused ? 'none' : '';
+        $('resume').style.display = d.paused ? '' : 'none';
+        $('stop').style.display='';
+      } else {
+        setStatus(d.status);
         clearInterval(poll); poll=null;
-        $('run').style.display=''; $('stop').style.display='none';
+        $('run').style.display=''; $('pause').style.display='none';
+        $('resume').style.display='none'; $('stop').style.display='none';
         fetch('/api/results').then(function(r){return r.json()}).then(function(res){
           records=res.records||[]; histId=null; renderGrid(); dlEnabled(records.length>0);
           loadHistory();
@@ -735,9 +744,19 @@
     fetch('/api/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)})
       .then(function(r){return r.json()}).then(function(d){
         if(!d.ok){alert(d.error||t('a_start_err'));return;}
-        $('run').style.display='none'; $('stop').style.display=''; setStatus('running');
+        $('run').style.display='none'; $('pause').style.display='';
+        $('resume').style.display='none'; $('stop').style.display=''; setStatus('running');
         if(poll)clearInterval(poll); poll=setInterval(tick,700); tick();
       }).catch(function(e){alert(t('a_server')+e)});
+  });
+
+  $('pause').addEventListener('click',function(){
+    $('pause').disabled=true;
+    fetch('/api/pause',{method:'POST'}).finally(function(){setTimeout(function(){$('pause').disabled=false},800)});
+  });
+  $('resume').addEventListener('click',function(){
+    $('resume').disabled=true;
+    fetch('/api/resume',{method:'POST'}).finally(function(){setTimeout(function(){$('resume').disabled=false},800)});
   });
 
   $('stop').addEventListener('click',function(){

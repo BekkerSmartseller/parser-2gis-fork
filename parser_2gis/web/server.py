@@ -849,6 +849,56 @@ def create_app():
             return _err('Задача не найдена', 404)
         return {'ok': jobs.stop(data.job_id)}
 
+    @post('/api/pause', status_code=200, sync_to_thread=True, summary='Поставить задачу на паузу',
+          description='Пауза между URL: текущая страница дорабатывает, следующие ссылки '
+                      'не начнутся до /api/resume. job_id в теле; без job_id — последняя задача.',
+          responses={
+              200: ResponseSpec(OkResponse, description='OK',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True})]),
+              400: ResponseSpec(dict, description='Невалидное тело',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+              404: ResponseSpec(dict, description='Задача не найдена',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': 'Задача не найдена'})]),
+          })
+    def api_pause(
+        data: JobIdRequest = Body(
+            title='Параметры',
+            description='job_id — ID задачи (опционально, без него — последняя).',
+            examples=[Example(value={'job_id': 'ab12cd34ef56'})],
+        ),
+    ) -> Any:
+        if data.job_id and data.job_id not in jobs._jobs:
+            return _err('Задача не найдена', 404)
+        return {'ok': jobs.pause(data.job_id)}
+
+    @post('/api/resume', status_code=200, sync_to_thread=True, summary='Снять паузу с задачи',
+          description='Возобновляет парсинг после /api/pause. job_id в теле; без job_id — '
+                      'последняя задача.',
+          responses={
+              200: ResponseSpec(OkResponse, description='OK',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': True})]),
+              400: ResponseSpec(dict, description='Невалидное тело',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': '...'})]),
+              404: ResponseSpec(dict, description='Задача не найдена',
+                                media_type='application/json', generate_examples=False,
+                                examples=[Example(value={'ok': False, 'error': 'Задача не найдена'})]),
+          })
+    def api_resume(
+        data: JobIdRequest = Body(
+            title='Параметры',
+            description='job_id — ID задачи (опционально, без него — последняя).',
+            examples=[Example(value={'job_id': 'ab12cd34ef56'})],
+        ),
+    ) -> Any:
+        if data.job_id and data.job_id not in jobs._jobs:
+            return _err('Задача не найдена', 404)
+        return {'ok': jobs.resume(data.job_id)}
+
     @post('/api/clear', status_code=200, sync_to_thread=True, summary='Очистить задачу',
           description='Очищает результат задачи (job_id в теле; без job_id — последнюю). '
                       'При невалидном/неполном теле — 400.',
@@ -912,6 +962,7 @@ def create_app():
             'job_id': job.id,
             'status': job.status,
             'running': job.running,
+            'paused': job.paused,
             'count': job.count,
             'error': job.error,
             'logs': logs,
