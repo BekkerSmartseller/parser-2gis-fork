@@ -36,3 +36,10 @@ class ParserOptions(BaseModel):
     proxy_mode: str = 'round_robin'
     collect_branches: bool = True
     skip_seen_firms: bool = False
+    # БД-режим (TimescaleDB/Postgres): 'files' | 'db'. Работает только когда
+    # задан P2GIS_DB_URL. Даёт кэш запросов, планировщик, поиск из БД и синк.
+    storage: str = 'files'
+    # TTL кэша запросов (часы); 0 — значение по умолчанию (P2GIS_CACHE_TTL_HOURS, 168).
+    cache_ttl_hours: int = 0
+    # Автосинхронизация p2gis -> medexpertai после завершения задачи (БД-режим).
+    sync_after: bool = True

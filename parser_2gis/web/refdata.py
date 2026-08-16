@@ -80,6 +80,134 @@ def _write_marker() -> None:
                   {'updated_at': datetime.now(timezone.utc).isoformat()})
 
 
+# --- БД-слой справочников (канонический в БД-режиме; файлы — зеркало/фолбэк) ---
+# Импорты ..db — только внутри функций, чтобы не создавать цикл: db-модули
+# не импортируют web.refdata на уровне модуля.
+
+def save_cities_db(cities: list[dict[str, Any]], source: str = '2gis') -> int:
+    """Upsert городов в p2gis.cities. Возвращает число записанных (0 при недоступной БД)."""
+    try:
+        from ..db.connection import connection, enabled
+        if not enabled():
+            return 0
+        rows = [(c.get('code'), c.get('name'), c.get('domain', 'ru'),
+                 c.get('country_code', 'ru'), source)
+                for c in cities if c.get('code') and c.get('name')]
+        if not rows:
+            return 0
+        with connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "INSERT INTO p2gis.cities (code, name, domain, country_code, source, updated_at) "
+                        "VALUES (%s, %s, %s, %s, %s, now()) "
+                        "ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name, "
+                        "domain=EXCLUDED.domain, country_code=EXCLUDED.country_code, "
+                        "source=EXCLUDED.source, updated_at=now()", rows)
+        return len(rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[refdata] save_cities_db: %s', e)
+        return 0
+
+
+def save_rubrics_db(rubrics: dict[str, dict]) -> int:
+    """Upsert рубрикатора в p2gis.rubrics. Возвращает число записанных."""
+    try:
+        from psycopg.types.json import Jsonb
+        from ..db.connection import connection, enabled
+        if not enabled():
+            return 0
+        rows = []
+        for code, node in (rubrics or {}).items():
+            if not code:
+                continue
+            rows.append((str(code), str(node.get('label') or ''),
+                         str(node.get('parentCode') or '0'), Jsonb(node)))
+        if not rows:
+            return 0
+        with connection() as conn:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "INSERT INTO p2gis.rubrics (code, label, parent_code, node, updated_at) "
+                        "VALUES (%s, %s, %s, %s, now()) "
+                        "ON CONFLICT (code) DO UPDATE SET label=EXCLUDED.label, "
+                        "parent_code=EXCLUDED.parent_code, node=EXCLUDED.node, updated_at=now()",
+                        rows)
+        return len(rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[refdata] save_rubrics_db: %s', e)
+        return 0
+
+
+def load_cities_list() -> list[dict[str, Any]]:
+    """Города: из БД (БД-режим), иначе/при ошибке — из файла (как раньше)."""
+    try:
+        from ..db.connection import connection, enabled
+        if enabled():
+            with connection() as conn:
+                rows = conn.execute(
+                    "SELECT code, name, domain, country_code FROM p2gis.cities "
+                    "ORDER BY domain, name").fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[refdata] load_cities_list (БД): %s', e)
+    try:
+        with open(cities_file(), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def load_rubrics_dict() -> dict[str, dict]:
+    """Рубрикатор {code: node}: из БД (БД-режим), иначе/при ошибке — из файла."""
+    try:
+        from ..db.connection import connection, enabled
+        if enabled():
+            with connection() as conn:
+                rows = conn.execute(
+                    "SELECT node FROM p2gis.rubrics").fetchall()
+                out = {}
+                for r in rows:
+                    node = r['node']
+                    code = str(node.get('code') or '')
+                    if code:
+                        out[code] = node
+                if out:
+                    return out
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[refdata] load_rubrics_dict (БД): %s', e)
+    try:
+        with open(rubrics_file(), 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def seed_refdata_db() -> dict:
+    """Одноразовое сидирование справочников из файлов в БД (БД-режим).
+
+    Вызывается сразу после apply_schema(): города и рубрики появляются в
+    p2gis.cities/p2gis.rubrics немедленно, независимо от успеха Chrome-обновления
+    из data.2gis.com. Идемпотентно (upsert по code). Без БД — no-op.
+    """
+    try:
+        from ..db.connection import enabled
+        if not enabled():
+            return {'ok': False, 'status': 'disabled'}
+        cities = load_cities_list()
+        rubrics = load_rubrics_dict()
+        n_cities = save_cities_db(cities, source='2gis')
+        n_rubrics = save_rubrics_db(rubrics)
+        logger.info('[refdata] сидирование справочников в БД: %d городов, %d рубрик',
+                    n_cities, n_rubrics)
+        return {'ok': True, 'cities': n_cities, 'rubrics': n_rubrics}
+    except Exception as e:  # noqa: BLE001
+        logger.warning('[refdata] seed_refdata_db: %s', e)
+        return {'ok': False, 'error': str(e)}
+
+
 # --- Разбор ответов 2GIS (чистые функции, тестируются без Chrome) ---
 
 def parse_cities(doc: dict) -> list[dict[str, Any]]:
@@ -154,11 +282,15 @@ def refresh_reference_data(force: bool = False) -> dict:
 
         _write_atomic(_refdata_dir() / 'cities.json', cities)
         _write_atomic(_refdata_dir() / 'rubrics.json', rubrics)
+        # БД-режим: справочники пишем и в БД (канон), файлы остаются зеркалом/фолбэком.
+        n_cities = save_cities_db(cities)
+        n_rubrics = save_rubrics_db(rubrics)
         _write_marker()
         _clear_caches()
 
-        logger.info('[refdata] справочники обновлены: %d городов, %d рубрик',
-                    len(cities), len(rubrics))
+        logger.info('[refdata] справочники обновлены: %d городов, %d рубрик'
+                    ' (БД: %d городов, %d рубрик)',
+                    len(cities), len(rubrics), n_cities, n_rubrics)
         return {'ok': True, 'status': 'ok', 'cities': len(cities),
                 'rubrics': len(rubrics),
                 'updated_at': last_refresh_time().isoformat()}

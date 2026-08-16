@@ -5,6 +5,7 @@ import os
 import tempfile
 import urllib.parse
 import webbrowser
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Optional
@@ -170,6 +171,14 @@ class AdvancedOptions(BaseModel):
         default=None, description='Собирать все филиалы сетей (со страницы /branches/)')
     skip_seen_firms: Optional[bool] = Field(
         default=None, description='Пропускать организации из прошлых задач (кэш seen_firms)')
+    storage: Optional[str] = Field(
+        default=None, description='Хранилище: files (по умолчанию) или db '
+                                  '(TimescaleDB; кэш запросов, планировщик, синк в medexpertai). '
+                                  'Без значения — db, если задан P2GIS_DB_URL')
+    cache_ttl_hours: Optional[int] = Field(
+        default=None, gt=0, description='TTL кэша запросов в часах (БД-режим; по умолчанию 168 = 7 дней)')
+    sync_after: Optional[bool] = Field(
+        default=None, description='Синхронизировать p2gis -> medexpertai после завершения задачи (БД-режим)')
 
 
 class StartRequest(BaseModel):
@@ -214,6 +223,38 @@ class MergeRequest(BaseModel):
 
     ids: list[str] = Field(description='ID записей истории для объединения',
                            examples=[['20260811-160924-376519', '20260811-161200-123456']])
+
+
+class ScheduleRequest(BaseModel):
+    """Тело POST/PUT /api/schedules: расписание автообновления."""
+    model_config = ConfigDict(extra='ignore')
+
+    name: str = Field(description='Название расписания', examples=['Фитнес: Москва/СПб'])
+    cron: Optional[str] = Field(default=None,
+                                description='Cron-выражение (например "0 3 * * *")')
+    interval_minutes: Optional[int] = Field(default=None, ge=1,
+                                            description='Или простой интервал в минутах')
+    cities: list[str] = Field(default_factory=list, description='Коды городов (slug)')
+    rubrics: list[str] = Field(default_factory=list, description='Коды рубрик (rubricId)')
+    queries: list[str] = Field(default_factory=list, description='Текстовые запросы')
+    max_concurrent: Optional[int] = Field(default=None, gt=0,
+                                          description='Сколько Chrome одновременно')
+    ttl_hours: Optional[int] = Field(default=None, gt=0, description='TTL кэша, часов')
+    sync_after: bool = Field(default=True,
+                             description='Синхронизировать в medexpertai после задачи')
+    enabled: bool = Field(default=True, description='Расписание активно')
+
+
+class SyncRequest(BaseModel):
+    """Тело POST /api/sync: фильтры синхронизации p2gis -> medexpertai."""
+    model_config = ConfigDict(extra='ignore')
+
+    since: Optional[str] = Field(default=None, description='ISO-метка: синхронизировать с неё')
+    limit: Optional[int] = Field(default=None, gt=0, description='Максимум записей за вызов')
+    city: Optional[str] = Field(default=None, description='Город (код или имя)')
+    rubric_id: Optional[str] = Field(default=None, description='Рубрика (rubricId)')
+    deactivate: bool = Field(default=True,
+                             description='Деактивировать филиалы сети, отсутствующие в наборе')
 
 
 # --- Модели ответов ---
@@ -333,6 +374,15 @@ def _load_custom_cities() -> list[dict[str, Any]]:
         return []
 
 
+def _db_enabled() -> bool:
+    """БД-режим доступен (P2GIS_DB_URL задан и БД отвечает)."""
+    try:
+        from ..db import enabled
+        return enabled()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _save_custom_cities(entries: list[dict[str, Any]]) -> None:
     p = _custom_cities_path()
     tmp = p.with_suffix('.tmp')
@@ -345,7 +395,10 @@ def _save_custom_cities(entries: list[dict[str, Any]]) -> None:
 
 def _add_city(name: str, code: str | None = None, domain: str = 'ru',
               country_code: str = 'ru') -> dict[str, Any]:
-    """Добавляет город в список (base + custom). Идемпотентно по code."""
+    """Добавляет город в список (base + custom). Идемпотентно по code/имени.
+
+    В БД-режиме город также пишется в p2gis.cities (source='custom').
+    """
     name = (name or '').strip()
     if not name:
         raise ValueError('name required')
@@ -360,6 +413,16 @@ def _add_city(name: str, code: str | None = None, domain: str = 'ru',
             return dict(c)
 
     entry = {'name': name, 'code': code, 'domain': domain, 'country_code': country_code}
+
+    # БД-режим: upsert в p2gis.cities (source='custom'), кэш сбрасывается.
+    if _db_enabled():
+        try:
+            from .refdata import save_cities_db
+            save_cities_db([entry], source='custom')
+            _load_cities.cache_clear()
+        except Exception as e:  # noqa: BLE001
+            logger.warning('[server] не удалось сохранить город в БД: %s', e)
+
     custom = _load_custom_cities()
     for c in custom:
         if c.get('code') == code:
@@ -371,24 +434,30 @@ def _add_city(name: str, code: str | None = None, domain: str = 'ru',
 
 @lru_cache(maxsize=1)
 def _load_cities() -> list[dict[str, Any]]:
-    from .refdata import cities_file
-    with open(cities_file(), 'r', encoding='utf-8') as f:
-        base = json.load(f)
+    """Города для генератора/поиска. БД-режим: из p2gis.cities (вкл. custom).
+    Файловый режим: base cities.json + пользовательские cities_custom.json."""
+    from .refdata import load_cities_list
+    cities = load_cities_list()
+    if _db_enabled():
+        return cities
     # добавляем пользовательские города (без дублей по code)
-    seen = {c.get('code') for c in base if c.get('code')}
+    seen = {c.get('code') for c in cities if c.get('code')}
     for c in _load_custom_cities():
         if c.get('code') and c['code'] not in seen:
-            base.append(c)
+            cities.append(c)
             seen.add(c['code'])
-    return base
+    return cities
 
 
 @lru_cache(maxsize=1)
 def _load_rubrics() -> list[dict[str, Any]]:
-    """Flat list of rubrics for the web generator picker."""
-    from .refdata import rubrics_file
-    with open(rubrics_file(), 'r', encoding='utf-8') as f:
-        rubrics = json.load(f)
+    """Flat list of rubrics for the web generator picker. БД-режим: из p2gis.rubrics."""
+    from .refdata import load_rubrics_dict
+    return _flatten_rubrics(load_rubrics_dict())
+
+
+def _flatten_rubrics(rubrics: dict[str, Any]) -> list[dict[str, Any]]:
+    """Рубрикатор {code: node} -> плоский список для генератора ссылок."""
 
     def top_group(node: dict[str, Any]) -> str:
         """Верхнеуровневая рубрика-группа (parentCode '0'), которой принадлежит node."""
@@ -413,6 +482,7 @@ def _load_rubrics() -> list[dict[str, Any]]:
         out.append({
             'code': node['code'],
             'label': node['label'],
+            'parent_code': str(node.get('parentCode') or '0'),
             'is_russian': bool(node.get('isRussian', True)),
             'is_non_russian': bool(node.get('isNonRussian', True)),
             'group': top_group(node),
@@ -453,6 +523,22 @@ def _build_config(data: dict[str, Any]) -> Configuration:
             config.parser.collect_branches = bool(adv['collect_branches'])
         if adv.get('skip_seen_firms') is not None:
             config.parser.skip_seen_firms = bool(adv['skip_seen_firms'])
+        if adv.get('storage') is not None:
+            config.parser.storage = str(adv['storage'])
+        if adv.get('cache_ttl_hours') is not None:
+            config.parser.cache_ttl_hours = max(1, int(adv['cache_ttl_hours']))
+        if adv.get('sync_after') is not None:
+            config.parser.sync_after = bool(adv['sync_after'])
+
+    # Хранилище по умолчанию: db, если задан P2GIS_DB_URL (иначе files).
+    # Явный advanced.storage имеет приоритет; «Авто» в UI = это правило.
+    if adv.get('storage') is None and _db_enabled():
+        config.parser.storage = 'db'
+    if config.parser.storage not in ('db', 'files'):
+        config.parser.storage = 'files'
+    if config.parser.storage == 'db' and not _db_enabled():
+        # БД недоступна (нет P2GIS_DB_URL или пул упал) — откат на файлы.
+        config.parser.storage = 'files'
 
     f = data.get('filters', {}) or {}
     config.filters.dedup_franchises = bool(f.get('dedup_franchises'))
@@ -497,7 +583,8 @@ class _LocalDocsController(OpenAPIController):
 
 def create_app():
     """Create the Litestar app for the dashboard."""
-    from litestar import Litestar, delete, get, post
+    from litestar import Litestar, delete, get, post, put
+    from litestar.exceptions import HTTPException
     from litestar.openapi import OpenAPIConfig, ResponseSpec
     from litestar.openapi.spec import Example
     from litestar.params import Body, PathParameter, QueryParameter
@@ -507,6 +594,8 @@ def create_app():
     static_dir = _static_dir()
     jobs = JobManager(max_concurrent=3)
     history = History()
+    from ..db.scheduler import Scheduler
+    scheduler = Scheduler(jobs)
 
     def _err(msg: str, code: int = 400) -> Any:
         """JSON error response (Litestar does not support (body, status) tuples)."""
@@ -549,6 +638,20 @@ def create_app():
         try:
             config = _build_config(data.model_dump())
             # Update worker concurrency on the fly from the request's max_concurrent.
+            # БД-режим: если все URL уже «свежие» в request_cache — отдаём из БД,
+            # не запуская Chrome (кэш-задача читает p2gis.records).
+            if config.parser.storage == 'db':
+                from ..db import cache as db_cache
+                fingerprints = [db_cache.fingerprint_for_url(u) for u in urls]
+                if all(f is not None for f in fingerprints):
+                    ttl = config.parser.cache_ttl_hours or None
+                    status = db_cache.request_status(
+                        [f['fingerprint'] for f in fingerprints], ttl)
+                    if all(status.get(f['fingerprint'], {}).get('fresh')
+                           for f in fingerprints):
+                        job_id = jobs.start(config, urls, fingerprints=fingerprints,
+                                            cache_hit=True)
+                        return {'ok': True, 'job_id': job_id, 'cache_hit': True}
             job_id = jobs.start(config, urls)
         except RuntimeError as e:
             return _err(str(e), 409)
@@ -902,7 +1005,10 @@ def create_app():
         if not job or not job.collector:
             return _err('Нет данных')
         try:
-            return _export_response(job.collector.docs, job.collector._options, format)
+            docs = job.export_docs()
+            if not docs:
+                return _err('Нет данных')
+            return _export_response(docs, job.collector._options, format)
         except Exception as e:
             logger.error('Ошибка экспорта: %s', e)
             return _err(str(e), 500)
@@ -1012,7 +1118,217 @@ def create_app():
     def api_history_delete(hid: Annotated[str, PathParameter(description='ID записи (YYYYMMDD-HHMMSS-ffffff)')]) -> Any:
         return {'ok': history.delete(hid)}
 
-    return Litestar(
+    # --- БД-режим (TimescaleDB) ---
+
+    def _require_db() -> bool:
+        try:
+            from ..db import enabled as _db_enabled
+            return _db_enabled()
+        except Exception:  # noqa: BLE001
+            return False
+
+    @get('/api/db/search', sync_to_thread=True, summary='Поиск из БД (без Chrome)',
+         description='Поиск по собранным данным p2gis.records: город × рубрика × ключевые слова '
+                     '(pg_trgm по search_text). Работает без запуска Chrome.',
+         responses={200: ResponseSpec(ResultsResponse, description='OK',
+                                      media_type='application/json', generate_examples=False)})
+    def api_db_search(
+        city: Annotated[Optional[str], QueryParameter(
+            default=None, description='Город (код или часть названия)')] = None,
+        q: Annotated[Optional[str], QueryParameter(
+            default=None, description='Ключевые слова (название/адрес/рубрика)')] = None,
+        rubric: Annotated[Optional[str], QueryParameter(
+            default=None, description='Рубрика (rubricId)')] = None,
+        limit: Annotated[int, QueryParameter(default=100,
+                                             description='Максимум записей (до 5000)')] = 100,
+    ) -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        from ..db.queries import db_search
+        return {'records': db_search(city=city, query=q, rubric=rubric, limit=limit)}
+
+    @get('/api/db/cache', sync_to_thread=True, summary='Кэш запросов',
+         description='Записи request_cache со свежестью (fresh/stale по TTL).',
+         responses={200: ResponseSpec(dict, description='OK',
+                                      media_type='application/json', generate_examples=False)})
+    def api_db_cache() -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        from ..db import cache as db_cache
+        return {'items': db_cache.cache_rows()}
+
+    @get('/api/db/coverage', sync_to_thread=True, summary='Покрытие данных',
+         description='Записей по городу×рубрике, последнее обновление и свежесть.',
+         responses={200: ResponseSpec(dict, description='OK',
+                                      media_type='application/json', generate_examples=False)})
+    def api_db_coverage() -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        from ..db import cache as db_cache
+        return {'items': db_cache.coverage()}
+
+    @post('/api/refresh-stale', status_code=200, sync_to_thread=True,
+          summary='Обновить протухшие запросы',
+          description='Пере-парсит все запросы, чей кэш протух или отсутствует '
+                      '(через JobManager, общий лимит воркеров).',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False)})
+    def api_refresh_stale() -> Any:
+        if not _require_db():
+            raise HTTPException(status_code=400,
+                                detail='БД не настроена (задайте P2GIS_DB_URL)')
+        from ..db import cache as db_cache
+        stale = db_cache.stale_fingerprints()
+        if not stale:
+            return {'ok': True, 'started': 0, 'message': 'Нет протухших запросов'}
+        config = _build_config({'urls': [s['url'] for s in stale],
+                                'max_concurrent': 1,
+                                'advanced': {'storage': 'db'}})
+        job_id = jobs.start(config, [s['url'] for s in stale],
+                            fingerprints=[{k: s[k] for k in
+                                           ('fingerprint', 'city_code', 'rubric_id',
+                                            'query_text', 'url')} for s in stale])
+        return {'ok': True, 'started': len(stale), 'job_id': job_id}
+
+    @get('/api/schedules', sync_to_thread=True, summary='Расписания автообновления',
+         description='Список расписаний планировщика (БД-режим).',
+         responses={200: ResponseSpec(dict, description='OK',
+                                      media_type='application/json', generate_examples=False)})
+    def api_schedules() -> Any:
+        if not _require_db():
+            raise HTTPException(status_code=400,
+                                detail='БД не настроена (задайте P2GIS_DB_URL)')
+        from ..db.scheduler import list_schedules
+        return {'items': list_schedules()}
+
+    @post('/api/schedules', status_code=200, sync_to_thread=True,
+          summary='Создать расписание',
+          description='Создаёт расписание автообновления (cron или интервал).',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False)})
+    def api_schedule_create(data: ScheduleRequest = Body(
+        title='Расписание',
+        description='name обязателен; cron или interval_minutes — одно из двух.',
+        examples=[Example(value={'name': 'Фитнес: Москва', 'cron': '0 3 * * *',
+                                 'cities': ['moskva'], 'rubrics': ['268']})])) -> Any:
+        if not _require_db():
+            raise HTTPException(status_code=400,
+                                detail='БД не настроена (задайте P2GIS_DB_URL)')
+        from ..db.scheduler import create_schedule
+        try:
+            return {'ok': True, 'schedule': create_schedule(
+                name=data.name, cron=data.cron, interval_minutes=data.interval_minutes,
+                cities=data.cities, rubrics=data.rubrics, queries=data.queries,
+                max_concurrent=data.max_concurrent, ttl_hours=data.ttl_hours,
+                sync_after=data.sync_after, enabled_flag=data.enabled)}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @put('/api/schedules/{sid:int}', status_code=200, sync_to_thread=True,
+         summary='Изменить расписание',
+         description='Обновляет поля расписания.',
+         responses={200: ResponseSpec(dict, description='OK',
+                                      media_type='application/json', generate_examples=False),
+                    404: ResponseSpec(dict, description='Не найдено',
+                                      media_type='application/json', generate_examples=False)})
+    def api_schedule_update(
+        sid: Annotated[int, PathParameter(description='ID расписания')],
+        data: ScheduleRequest = Body(title='Поля', description='Обновляемые поля.'),
+    ) -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        from ..db.scheduler import update_schedule
+        try:
+            sched = update_schedule(sid, **data.model_dump())
+        except LookupError:
+            return _err('Расписание не найдено', 404)
+        except ValueError as e:
+            return _err(str(e), 400)
+        return {'ok': True, 'schedule': sched}
+
+    @delete('/api/schedules/{sid:int}', status_code=200, sync_to_thread=True,
+            summary='Удалить расписание',
+            description='Удаляет расписание.',
+            responses={200: ResponseSpec(OkResponse, description='OK',
+                                         media_type='application/json', generate_examples=False)})
+    def api_schedule_delete(sid: Annotated[int, PathParameter(description='ID расписания')]) -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        from ..db.scheduler import delete_schedule
+        return {'ok': delete_schedule(sid)}
+
+    @post('/api/schedules/{sid:int}/run', status_code=200, sync_to_thread=True,
+          summary='Запустить расписание сейчас',
+          description='Немедленно ставит задачи расписания в очередь.',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False),
+                     404: ResponseSpec(dict, description='Не найдено',
+                                       media_type='application/json', generate_examples=False)})
+    def api_schedule_run(sid: Annotated[int, PathParameter(description='ID расписания')]) -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        try:
+            return {'ok': True, **scheduler.run_schedule(sid)}
+        except LookupError:
+            return _err('Расписание не найдено', 404)
+        except RuntimeError as e:
+            return _err(str(e), 400)
+
+    @post('/api/schedules/{sid:int}/toggle', status_code=200, sync_to_thread=True,
+          summary='Включить/выключить расписание',
+          description='Переключает флаг enabled.',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False)})
+    def api_schedule_toggle(sid: Annotated[int, PathParameter(description='ID расписания')]) -> Any:
+        if not _require_db():
+            return _err('БД не настроена (задайте P2GIS_DB_URL)', 400)
+        from ..db.scheduler import toggle_schedule
+        try:
+            return {'ok': True, 'schedule': toggle_schedule(sid)}
+        except LookupError:
+            return _err('Расписание не найдено', 404)
+
+    @post('/api/sync', status_code=200, sync_to_thread=True,
+          summary='Синхронизировать в medexpertai',
+          description='Переносит p2gis.records в medexpertai (org + филиалы, upsert по firm_id, '
+                      'деактивация исчезнувших). Без since — с последнего курсора.',
+          responses={200: ResponseSpec(dict, description='OK',
+                                       media_type='application/json', generate_examples=False)})
+    def api_sync(data: Optional[SyncRequest] = Body(
+        title='Параметры',
+        description='Все фильтры опциональны; можно вызывать и без тела.',
+        default=None,
+        examples=[Example(value={'limit': 20000})])) -> Any:
+        if not _require_db():
+            raise HTTPException(status_code=400,
+                                detail='БД не настроена (задайте P2GIS_DB_URL)')
+        from ..db.sync import sync_to_medexpertai
+        since = None
+        if data and data.since:
+            try:
+                since = datetime.fromisoformat(data.since)
+            except ValueError:
+                return _err('since: некорректный ISO-формат', 400)
+        try:
+            res = sync_to_medexpertai(
+                since=since, limit=(data.limit if data and data.limit else 20000),
+                city=(data.city if data else None),
+                rubric_id=(data.rubric_id if data else None),
+                deactivate=(data.deactivate if data else True))
+        except Exception as e:
+            logger.error('Ошибка синхронизации: %s', e)
+            return _err(str(e), 500)
+        return {'ok': True, **res}
+
+    @get('/api/sync/status', sync_to_thread=True, summary='Статус синхронизации',
+         description='Курсор и последняя ошибка синхронизации p2gis -> medexpertai.',
+         responses={200: ResponseSpec(dict, description='OK',
+                                      media_type='application/json', generate_examples=False)})
+    def api_sync_status() -> Any:
+        from ..db.sync import sync_status
+        return sync_status()
+
+    app = Litestar(
         route_handlers=[
             index,
             api_start,
@@ -1033,12 +1349,26 @@ def create_app():
             api_history_delete,
             api_geocode,
             api_route,
+            api_db_search,
+            api_db_cache,
+            api_db_coverage,
+            api_refresh_stale,
+            api_schedules,
+            api_schedule_create,
+            api_schedule_update,
+            api_schedule_delete,
+            api_schedule_run,
+            api_schedule_toggle,
+            api_sync,
+            api_sync_status,
         ],
         static_files_config=[StaticFilesConfig(path='/static', directories=[str(static_dir)])],
         openapi_config=OpenAPIConfig(
             title='Parser2GIS API', version=version,
             openapi_controller=_LocalDocsController),
     )
+    app.state.scheduler = scheduler
+    return app
 
 
 def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = True) -> None:
@@ -1046,6 +1376,23 @@ def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = T
     import uvicorn
 
     app = create_app()
+    # БД-режим: сначала применяем схему и сидируем справочники, потом запускаем
+    # планировщик и фоновое обновление справочников (чтобы БД-запись шла в уже
+    # существующие таблицы — раньше гонка оставляла p2gis.cities/rubrics пустыми).
+    try:
+        from ..db import apply_schema, enabled
+        if enabled():
+            if apply_schema():
+                from .refdata import seed_refdata_db
+                seed_refdata_db()
+                scheduler = getattr(app.state, 'scheduler', None)
+                if scheduler is not None:
+                    scheduler.start()
+            else:
+                logger.error('Схема p2gis не применена — БД-режим недоступен.')
+    except Exception as e:  # noqa: BLE001
+        logger.exception('Не удалось инициализировать БД-режим: %s', e)
+
     # Автообновление справочников (при запуске + раз в сутки). Только в
     # реальном сервере — тесты/импорты не трогают сеть.
     try:
@@ -1053,6 +1400,7 @@ def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = T
         start_background_refresh()
     except Exception:  # noqa: BLE001
         logger.exception('Не удалось запустить фоновое обновление справочников')
+
     url = f'http://{host}:{port}/'
     logger.info('Веб-интерфейс запущен: %s', url)
     if open_browser:
@@ -1060,4 +1408,11 @@ def run_server(host: str = '127.0.0.1', port: int = 8666, open_browser: bool = T
             webbrowser.open(url)
         except Exception:
             pass
-    uvicorn.run(app, host=host, port=port, log_level='warning')
+    try:
+        uvicorn.run(app, host=host, port=port, log_level='warning')
+    finally:
+        try:
+            from ..db.connection import close_pool
+            close_pool()
+        except Exception:  # noqa: BLE001
+            pass

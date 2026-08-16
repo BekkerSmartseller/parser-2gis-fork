@@ -323,6 +323,52 @@
             <option value="utf-8-sig">UTF-8 (Excel)</option><option value="utf-8">UTF-8</option>
             <option value="cp1251">Windows-1251</option></select></label>
         </div>
+        <div class="rowmini">
+          <label class="field"><span data-i18n="a_storage">Хранилище</span><select id="a_storage">
+            <option value="">Авто (P2GIS_DB_URL → БД)</option><option value="files">Файлы</option>
+            <option value="db">БД (TimescaleDB)</option></select></label>
+          <label class="field"><span data-i18n="a_ttl">TTL кэша, ч</span><input type="number" id="a_ttl" min="1" value="168" placeholder="168"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="a_sync" checked> <span data-i18n="a_sync">medexpertai-мен синхрондау (тапсырмадан кейін)</span></label>
+      </div>
+    </details>
+
+    <details class="sect" id="dbsec">
+      <summary data-i18n="db_title">🗄 БД (TimescaleDB)</summary>
+      <div class="sectbody">
+        <div id="dbstatus" class="hint">…</div>
+        <div id="dbPane">
+          <div class="rowmini">
+            <button type="button" class="btn-add" id="dbSync" data-i18n="db_sync">Синхронизировать</button>
+            <button type="button" class="btn-add" id="dbRefreshStale" data-i18n="db_refresh_stale">Обновить протухшее</button>
+          </div>
+          <label class="field"><span data-i18n="db_search">Поиск из БД</span>
+            <div class="waRow"><input type="text" id="dbQuery" data-i18n-ph="db_query_ph" placeholder="город · рубрика · запрос…">
+              <button type="button" class="btn-add" id="dbSearchBtn" title="🔎">🔎</button></div>
+          </label>
+          <div class="field"><span data-i18n="db_schedules">Расписания</span>
+            <div id="dbSchedList" class="histList"></div>
+            <button type="button" class="btn-add" id="dbSchedAdd" data-i18n="db_sched_add">+ Добавить расписание</button>
+          </div>
+          <div id="dbSchedForm" class="sectbody" style="display:none">
+            <label class="field"><span data-i18n="db_sched_name">Название</span><input id="dsName"></label>
+            <div class="rowmini">
+              <label class="field"><span>Cron</span><input id="dsCron" placeholder="0 3 * * *"></label>
+              <label class="field"><span data-i18n="db_sched_interval">Интервал, мин</span><input id="dsInterval" type="number" min="1"></label>
+            </div>
+            <label class="field"><span data-i18n="cities">Города</span><input id="dsCities" placeholder="moskva, spb"></label>
+            <label class="field"><span data-i18n="db_sched_rubrics">Рубрики (ID)</span><input id="dsRubrics" placeholder="268"></label>
+            <label class="field"><span data-i18n="query">Запросы</span><input id="dsQueries" placeholder="фитнес клуб"></label>
+            <div class="rowmini">
+              <label class="field"><span data-i18n="db_sched_workers">Воркеры</span><input id="dsWorkers" type="number" min="1" placeholder="3"></label>
+              <label class="field"><span data-i18n="a_ttl">TTL, ч</span><input id="dsTtl" type="number" min="1" placeholder="168"></label>
+            </div>
+            <button type="button" class="btn-add" id="dsSave" data-i18n="db_sched_save">Сохранить</button>
+          </div>
+          <div class="field"><span data-i18n="db_cache">Кэш запросов</span>
+            <div id="dbCacheList" class="histList"></div>
+          </div>
+        </div>
       </div>
     </details>
 
@@ -419,7 +465,16 @@
       a_need_url:'Кемінде бір 2GIS сілтемесін көрсетіңіз', a_need_query:'Сұранысты енгізіңіз',
       a_need_city:'Кемінде бір қаланы таңдаңыз', a_server:'Сервер қолжетімсіз: ', a_start_err:'Іске қосу қатесі',
       a_need_select:'Біріктіру үшін жазбаларды белгілеңіз', a_merge_err:'Біріктіру қатесі',
-      c_del:'Бұл жазбаны тарихтан жою керек пе?'
+      c_del:'Бұл жазбаны тарихтан жою керек пе?',
+      a_storage:'Қойма', a_ttl:'Кэш TTL, сағ', a_sync:'medexpertai-мен синхрондау (тапсырмадан кейін)',
+      db_title:'🗄 БД (TimescaleDB)', db_sync:'Синхрондау', db_refresh_stale:'Ескіргенді жаңарту',
+      db_search:'БД-дан іздеу', db_query_ph:'қала · айдар · сұраныс…',
+      db_schedules:'Кестелер', db_sched_add:'+ Кесте қосу', db_sched_name:'Атауы',
+      db_sched_interval:'Аралық, мин', db_sched_rubrics:'Айдарлар (ID)', db_sched_workers:'Воркерлер',
+      db_sched_save:'Сақтау', db_cache:'Сұраныс кэші',
+      db_not_configured:'БД қосылмаған (P2GIS_DB_URL)', db_syncing:'Синхрондалуда…',
+      db_run:'Іске қосу', db_off:'Өшіру', db_on:'Қосу', db_delete:'Жою',
+      db_fresh:'свежий', db_stale:'ескірген', db_last_synced:'Соңғы синхрондау: '
     },
     ru:{
       col1:'1 колонка', col2:'2 колонки', col3:'3 колонки',
@@ -453,7 +508,16 @@
       a_need_url:'Укажите хотя бы одну ссылку 2GIS', a_need_query:'Введите запрос',
       a_need_city:'Выберите хотя бы один город', a_server:'Сервер недоступен: ', a_start_err:'Ошибка запуска',
       a_need_select:'Отметьте галочками записи для объединения', a_merge_err:'Ошибка объединения',
-      c_del:'Удалить эту запись из истории?'
+      c_del:'Удалить эту запись из истории?',
+      a_storage:'Хранилище', a_ttl:'TTL кэша, ч', a_sync:'Синхронизировать в medexpertai после задачи',
+      db_title:'🗄 БД (TimescaleDB)', db_sync:'Синхронизировать', db_refresh_stale:'Обновить протухшее',
+      db_search:'Поиск из БД', db_query_ph:'город · рубрика · запрос…',
+      db_schedules:'Расписания', db_sched_add:'+ Добавить расписание', db_sched_name:'Название',
+      db_sched_interval:'Интервал, мин', db_sched_rubrics:'Рубрики (ID)', db_sched_workers:'Воркеры',
+      db_sched_save:'Сохранить', db_cache:'Кэш запросов',
+      db_not_configured:'БД не настроена (задайте P2GIS_DB_URL)', db_syncing:'Синхронизация…',
+      db_run:'Запустить', db_off:'Выкл', db_on:'Вкл', db_delete:'Удалить',
+      db_fresh:'свежий', db_stale:'протух', db_last_synced:'Последняя синхронизация: '
     }
   };
   var LANG='ru', lastStatus='idle';
@@ -491,7 +555,8 @@
       a_images:$('a_images').checked,a_max:$('a_max').checked,a_skip404:$('a_skip404').checked,
       a_rubrics:$('a_rubrics').checked,a_comments:$('a_comments').checked,a_rmempty:$('a_rmempty').checked,
       a_rmdup:$('a_rmdup').checked,a_delay:$('a_delay').value,a_cols:$('a_cols').value,
-      a_mem:$('a_mem').value,a_enc:$('a_enc').value
+      a_mem:$('a_mem').value,a_enc:$('a_enc').value,
+      a_storage:$('a_storage').value,a_ttl:$('a_ttl').value,a_sync:$('a_sync').checked
     }));}catch(_){}
   }
   function restoreSettings(){
@@ -499,9 +564,11 @@
     if(!s||typeof s!=='object')return;
     ['urls','maxrec','a_delay','a_cols','a_mem','f_rating','f_reviews'].forEach(function(k){if(s[k]!=null&&$(k))$(k).value=s[k];});
     ['headless','clean','f_dedup_niches','f_dedup','f_phone','f_wa','f_social','f_email','f_site',
-     'a_images','a_max','a_skip404','a_rubrics','a_comments','a_rmempty','a_rmdup'].forEach(function(k){
+     'a_images','a_max','a_skip404','a_rubrics','a_comments','a_rmempty','a_rmdup','a_sync'].forEach(function(k){
        if(s[k]!=null&&$(k))$(k).checked=!!s[k];});
     if(s.a_enc!=null&&$('a_enc'))$('a_enc').value=s.a_enc;
+    if(s.a_storage!=null&&$('a_storage'))$('a_storage').value=s.a_storage;
+    if(s.a_ttl!=null&&$('a_ttl'))$('a_ttl').value=s.a_ttl;
   }
   var _cfgTimer=null;
   function _scheduleCfgSave(){clearTimeout(_cfgTimer);_cfgTimer=setTimeout(saveSettings,250);}
@@ -528,7 +595,10 @@
         add_comments:$('a_comments').checked, remove_empty_columns:$('a_rmempty').checked,
         remove_duplicates:$('a_rmdup').checked, delay_between_clicks:parseInt($('a_delay').value||'0',10),
         columns_per_entity:parseInt($('a_cols').value||'3',10),
-        memory_limit:parseInt($('a_mem').value||'0',10), encoding:$('a_enc').value
+        memory_limit:parseInt($('a_mem').value||'0',10), encoding:$('a_enc').value,
+        storage:$('a_storage').value||undefined,
+        cache_ttl_hours:parseInt($('a_ttl').value||'0',10)||undefined,
+        sync_after:$('a_sync').checked
       }
     };
   }
@@ -900,6 +970,103 @@
     setTimeout(function(){btn.textContent=t('add_links');},1300);
   });
 
+  // ---- БД-режим (TimescaleDB): синхронизация, расписания, кэш, поиск ----
+  var dbOn=false;
+  function dbMark(ok,msg){$('dbstatus').textContent=msg;$('dbstatus').className='hint'+(ok?'':' err');
+    $('dbPane').style.display=ok?'':'none';}
+  function fmtAge(h){if(h==null)return'—'; if(h<24)return h.toFixed(1)+'ч'; return (h/24).toFixed(1)+'д';}
+  function renderDbCache(items){
+    var el=$('dbCacheList');
+    if(!items||!items.length){el.innerHTML='<div class="hint">'+t('hist_empty')+'</div>';return;}
+    el.innerHTML=items.slice(0,12).map(function(it){
+      var tag=it.fresh?'<span style="color:var(--ok)">● '+t('db_fresh')+'</span>':'<span style="color:var(--warn)">● '+t('db_stale')+'</span>';
+      var q=it.query_text||it.rubric_id||it.fingerprint;
+      return '<div class="histItem"><div class="hh"><span class="ht">'+esc(q)+'</span>'+tag+'</div>'+
+        '<div class="hu">'+esc(it.city_code||'')+(it.rubric_id?' · rubric '+esc(it.rubric_id):'')+
+        (it.records_found!=null?' · '+it.records_found+' '+t('recs_short'):'')+
+        ' · '+fmtAge(it.age_hours)+'</div></div>';
+    }).join('');
+  }
+  function renderDbSchedules(items){
+    var el=$('dbSchedList');
+    if(!items||!items.length){el.innerHTML='<div class="hint">'+t('hist_empty')+'</div>';return;}
+    el.innerHTML=items.map(function(s){
+      var when=s.cron||(s.interval_minutes?s.interval_minutes+' мин':'');
+      var st=s.enabled?'<span style="color:var(--ok)">'+t('db_on')+'</span>':'<span style="color:var(--muted)">'+t('db_off')+'</span>';
+      return '<div class="histItem"><div class="hh"><span class="ht">'+esc(s.name)+'</span>'+st+'</div>'+
+        '<div class="hu">'+esc(when)+' · '+s.urls.length+' URL</div>'+
+        '<div class="hb">'+
+        '<button class="hbtn" data-run="'+s.id+'">'+t('db_run')+'</button>'+
+        '<button class="hbtn" data-tog="'+s.id+'">'+(s.enabled?t('db_off'):t('db_on'))+'</button>'+
+        '<button class="hbtn" data-del="'+s.id+'" style="color:var(--danger)">'+t('db_delete')+'</button></div></div>';
+    }).join('');
+  }
+  function loadSchedules(){
+    fetch('/api/schedules').then(function(r){return r.json()}).then(function(d){renderDbSchedules(d.items||[]);}).catch(function(){});
+  }
+  function loadDb(){
+    fetch('/api/db/cache').then(function(r){return r.json()}).then(function(d){
+      if(d.error){dbOn=false;dbMark(false,t('db_not_configured'));return;}
+      dbOn=true; dbMark(true,'');
+      renderDbCache(d.items||[]); loadSchedules();
+    }).catch(function(){dbOn=false;dbMark(false,t('db_not_configured'));});
+  }
+  $('dbSync').addEventListener('click',function(){
+    var b=this; b.disabled=true; var old=b.textContent; b.textContent=t('db_syncing');
+    fetch('/api/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
+      .then(function(r){return r.json()}).then(function(d){
+        $('dbstatus').textContent=(d.ok?'OK':'')+' org='+(d.synced_orgs||0)+' branches='+(d.branches_upserted||0)
+          +(d.branches_deactivated?' deact='+d.branches_deactivated:'');
+        if(!d.ok&&d.error)$('dbstatus').textContent=d.error;
+        loadDb();
+      }).catch(function(e){$('dbstatus').textContent=t('a_server')+e;}).finally(function(){b.disabled=false;b.textContent=old;});
+  });
+  $('dbRefreshStale').addEventListener('click',function(){
+    var b=this; b.disabled=true;
+    fetch('/api/refresh-stale',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+      $('dbstatus').textContent=d.message||(t('db_refresh_stale')+': '+d.started); loadDb();
+    }).catch(function(e){$('dbstatus').textContent=t('a_server')+e;}).finally(function(){b.disabled=false;});
+  });
+  $('dbSearchBtn').addEventListener('click',function(){
+    var q=$('dbQuery').value.trim(); if(!q){return;}
+    var parts=q.split('·').map(function(s){return s.trim();}).filter(Boolean);
+    var params=new URLSearchParams({limit:500});
+    if(parts[0])params.set('city',parts[0]);
+    if(parts[1])params.set('rubric',parts[1].replace('rubric ',''));
+    if(parts[2])params.set('q',parts[2]);
+    fetch('/api/db/search?'+params.toString()).then(function(r){return r.json()}).then(function(d){
+      if(d.error){alert(d.error);return;}
+      records=d.records||[]; histId=null; renderGrid(); dlEnabled(records.length>0);
+      $('count').textContent=records.length+' '+t('found');
+    }).catch(function(e){alert(t('a_server')+e);});
+  });
+  $('dbQuery').addEventListener('keydown',function(e){if(e.key==='Enter')$('dbSearchBtn').click();});
+  $('dbSchedAdd').addEventListener('click',function(){var f=$('dbSchedForm');f.style.display=f.style.display==='none'?'':'none';});
+  $('dsSave').addEventListener('click',function(){
+    var body={name:$('dsName').value.trim(),cron:$('dsCron').value.trim()||null,
+      interval_minutes:parseInt($('dsInterval').value||'0',10)||null,
+      cities:$('dsCities').value.split(',').map(function(s){return s.trim();}).filter(Boolean),
+      rubrics:$('dsRubrics').value.split(',').map(function(s){return s.trim();}).filter(Boolean),
+      queries:$('dsQueries').value.split(',').map(function(s){return s.trim();}).filter(Boolean),
+      max_concurrent:parseInt($('dsWorkers').value||'0',10)||null,
+      ttl_hours:parseInt($('dsTtl').value||'0',10)||null, sync_after:true, enabled:true};
+    if(!body.name){alert(t('a_need_query'));return;}
+    if(!body.cron&&!body.interval_minutes){alert('cron или интервал');return;}
+    fetch('/api/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(function(r){return r.json()}).then(function(d){
+        if(d.error){alert(d.error);return;}
+        $('dbSchedForm').style.display='none'; loadSchedules();
+      }).catch(function(e){alert(t('a_server')+e);});
+  });
+  $('dbSchedList').addEventListener('click',function(e){
+    var run=e.target.closest('[data-run]'),tog=e.target.closest('[data-tog]'),del=e.target.closest('[data-del]');
+    if(run){fetch('/api/schedules/'+run.getAttribute('data-run')+'/run',{method:'POST'})
+      .then(function(r){return r.json()}).then(function(d){$('dbstatus').textContent=d.error||('job='+d.job_id);})
+      .catch(function(){});}
+    else if(tog){fetch('/api/schedules/'+tog.getAttribute('data-tog')+'/toggle',{method:'POST'}).then(function(){loadSchedules();});}
+    else if(del){if(confirm(t('c_del')))fetch('/api/schedules/'+del.getAttribute('data-del'),{method:'DELETE'}).then(function(){loadSchedules();});}
+  });
+
   // Restore state on load: settings, language, generator, results.
   (function init(){
     restoreSettings();
@@ -907,6 +1074,7 @@
     applyLang(savedLang);
     loadGenerator();
     loadHistory();
+    loadDb();
     fetch('/api/status?cursor=0').then(function(r){return r.json()}).then(function(d){
       cursor=d.cursor; setStatus(d.status);
       if(d.logs && d.logs.length){$('logwrap').style.display='';$('logbox').textContent=d.logs.join('\n');}

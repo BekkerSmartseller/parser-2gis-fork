@@ -4,6 +4,7 @@ from ..exceptions import ChromeRuntimeException, ChromeUserAbortException
 from ..logger import logger
 from ..parser import get_parser
 from ..writer import get_writer
+from ..writer.filters import any_filter_enabled
 from .runner import AbstractRunner
 
 
@@ -18,18 +19,12 @@ class CLIRunner(AbstractRunner):
     """
     def start(self):
         logger.info('Парсинг запущен.')
+        db_mode = self._config.parser.storage == 'db'
         try:
-            with get_writer(self._output_path, self._format, self._config.writer,
-                            self._config.filters) as writer:
-                for url in self._urls:
-                    logger.info(f'Парсинг ссылки {url}')
-                    with get_parser(url,
-                                    chrome_options=self._config.chrome,
-                                    parser_options=self._config.parser) as parser:
-                        try:
-                            parser.parse(writer)
-                        finally:
-                            logger.info('Парсинг ссылки завершён.')
+            if db_mode:
+                self._start_db()
+            else:
+                self._start_files()
         except (KeyboardInterrupt, ChromeUserAbortException):
             logger.error('Работа парсера прервана пользователем.')
         except Exception as e:
@@ -39,6 +34,51 @@ class CLIRunner(AbstractRunner):
                 logger.error('Ошибка во время работы парсера.', exc_info=True)
         finally:
             logger.info('Парсинг завершён.')
+
+    def _start_files(self):
+        with get_writer(self._output_path, self._format, self._config.writer,
+                        self._config.filters) as writer:
+            for url in self._urls:
+                logger.info(f'Парсинг ссылки {url}')
+                with get_parser(url,
+                                chrome_options=self._config.chrome,
+                                parser_options=self._config.parser) as parser:
+                    try:
+                        parser.parse(writer)
+                    finally:
+                        logger.info('Парсинг ссылки завершён.')
+
+    def _start_db(self):
+        """БД-режим: результаты в p2gis.records, файл по требованию из БД."""
+        from ..db import apply_schema
+        from ..db.store import DbCollector
+        apply_schema()
+        collector = DbCollector(self._config.writer)
+        writer = collector
+        if any_filter_enabled(self._config.filters):
+            from ..writer import FilterWriter
+            writer = FilterWriter(collector, self._config.filters)
+        with writer:
+            for url in self._urls:
+                logger.info(f'Парсинг ссылки {url}')
+                with get_parser(url,
+                                chrome_options=self._config.chrome,
+                                parser_options=self._config.parser) as parser:
+                    try:
+                        parser.parse(writer)
+                    finally:
+                        logger.info('Парсинг ссылки завершён.')
+        n = collector.count
+        logger.info('В БД записано записей: %d.', n)
+        # Файл по требованию из БД (если запрошен -o).
+        if self._output_path:
+            docs = collector.all_docs()
+            if docs:
+                with get_writer(self._output_path, self._format, self._config.writer,
+                                self._config.filters) as out:
+                    for doc in docs:
+                        out.write(doc)
+                logger.info('Экспортировано записей в %s: %d.', self._output_path, len(docs))
 
     def stop(self):
         pass

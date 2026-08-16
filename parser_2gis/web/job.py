@@ -4,6 +4,7 @@ import logging
 import queue
 import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..config import Configuration
@@ -34,6 +35,21 @@ class CollectorWriter(FileWriter):
     def __exit__(self, *exc_info) -> None:
         pass
 
+    @property
+    def count(self) -> int:
+        return len(self.docs)
+
+    def results(self) -> list[dict]:
+        out = []
+        for doc in self.docs:
+            record = extract_record(doc)
+            if record:
+                out.append(record)
+        return out
+
+    def all_docs(self) -> list[Any]:
+        return list(self.docs)
+
     def write(self, catalog_doc: Any) -> None:
         if not self._check_catalog_doc(catalog_doc):
             return
@@ -62,10 +78,15 @@ class _ListLogHandler(logging.Handler):
 
 class ParseJob:
     """A single background parse job (one URL set, one Chrome instance)."""
-    def __init__(self, job_id: str, config: Configuration, urls: list[str]) -> None:
+    def __init__(self, job_id: str, config: Configuration, urls: list[str],
+                 fingerprints: Optional[list] = None,
+                 cache_hit: bool = False) -> None:
         self.id = job_id
         self._config = config
         self._urls = urls
+        self._fingerprints = fingerprints or []
+        self._cache_hit = cache_hit
+        self._started_at = datetime.now(timezone.utc)
         self._parser = None
         self._cancelled = False
         self.status = 'queued'  # queued | running | done | stopped | error
@@ -79,12 +100,22 @@ class ParseJob:
 
     @property
     def count(self) -> int:
-        return len(self.collector.docs) if self.collector else 0
+        return self.collector.count if self.collector else 0
+
+    @property
+    def db_mode(self) -> bool:
+        return self._config.parser.storage == 'db'
 
     def start(self) -> None:
         """Start parsing in a daemon thread."""
         self.status = 'running'
-        self.collector = CollectorWriter(self._config.writer)
+        if self.db_mode:
+            from ..db.store import DbCollector
+            self.collector = DbCollector(self._config.writer, job_id=self.id)
+            self.collector.set_fingerprints(self._fingerprints)
+            self.collector.set_cache_hit(self._cache_hit)
+        else:
+            self.collector = CollectorWriter(self._config.writer)
         thread = threading.Thread(target=self._run, daemon=True)
         thread.start()
 
@@ -111,6 +142,16 @@ class ParseJob:
             if any_filter_enabled(self._config.filters):
                 writer = FilterWriter(self.collector, self._config.filters)
 
+            # Кэш-ответ: читаем результаты из БД, Chrome не запускаем.
+            if self._cache_hit:
+                n = self.collector.load_cached()
+                logger.info('Парсинг запущен (кэш из БД).')
+                logger.info('Результат из БД: %d записей (без запуска Chrome).', n)
+                self.status = 'done'
+                logger.info('Парсинг завершён (кэш из БД).')
+                self._db_postprocess('cache')
+                return
+
             logger.info('Парсинг запущен.')
             with writer:
                 for url in self._urls:
@@ -125,6 +166,8 @@ class ParseJob:
 
             self.status = 'stopped' if self._cancelled else 'done'
             logger.info('Парсинг %s.', 'остановлен' if self._cancelled else 'завершён')
+            if self.db_mode and not self._cancelled:
+                self._db_postprocess('ok')
         except Exception as e:
             if self._cancelled:
                 # Stopping closes the browser tab mid-request, surfacing as
@@ -139,7 +182,9 @@ class ParseJob:
             self._parser = None
             # Persist whatever was collected — full run or partial stop — so the
             # records survive reloads and aren't lost when the user hits Stop.
-            if self.status in ('done', 'stopped') and self.collector and self.collector.docs:
+            # В БД-режиме результаты уже в БД (файловая история не нужна).
+            if (not self.db_mode and self.status in ('done', 'stopped')
+                    and self.collector and self.collector.docs):
                 try:
                     History().save(self._urls, self.collector.docs,
                                    self.collector._options.model_dump(mode='json'))
@@ -147,16 +192,38 @@ class ParseJob:
                     logger.error('Не удалось сохранить историю: %s', e)
             logger.removeHandler(handler)
 
+    def _db_postprocess(self, result_status: str) -> None:
+        """После задачи в БД-режиме: журнал + request_cache + автосинк."""
+        try:
+            from ..db import cache as db_cache
+            from ..db.sync import sync_to_medexpertai
+            db_cache.record_job(self.id, self._urls, result_status,
+                                cache_hit=self._cache_hit,
+                                ttl_hours=self._config.parser.cache_ttl_hours or None,
+                                started_at=self._started_at)
+            if self._config.parser.sync_after and not self._cache_hit:
+                try:
+                    res = sync_to_medexpertai(since=self._started_at)
+                    logger.info('Синхронизация в medexpertai: org=%d, филиалы=%d',
+                                res.get('synced_orgs'), res.get('branches_upserted'))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning('Автосинк не выполнен: %s', e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning('[db] пост-обработка задачи: %s', e)
+
     def results(self) -> list[dict]:
         """Presentation-ready records for the dashboard grid."""
         if not self.collector:
             return []
-        out = []
-        for doc in self.collector.docs:
-            record = extract_record(doc)
-            if record:
-                out.append(record)
-        return out
+        return self.collector.results()
+
+    def export_docs(self) -> list[Any]:
+        """Сырые документы для экспорта (БД-режим читает полные данные из БД)."""
+        if not self.collector:
+            return []
+        if hasattr(self.collector, 'all_docs'):
+            return self.collector.all_docs()
+        return list(self.collector.docs)
 
 
 class JobManager:
@@ -193,12 +260,15 @@ class JobManager:
         self._worker_thread = threading.Thread(target=worker_loop, daemon=True)
         self._worker_thread.start()
 
-    def start(self, config: Configuration, urls: list[str]) -> str:
+    def start(self, config: Configuration, urls: list[str],
+              fingerprints: Optional[list] = None,
+              cache_hit: bool = False) -> str:
         """Queue a new parse job. Returns its job_id."""
         job_id = uuid.uuid4().hex[:12]
         # Deep-copy config so each job owns its ChromeOptions (proxy must not leak).
         job_config = config.model_copy(deep=True)
-        job = ParseJob(job_id, job_config, urls)
+        job = ParseJob(job_id, job_config, urls, fingerprints=fingerprints,
+                       cache_hit=cache_hit)
         with self._lock:
             self._jobs[job_id] = job
         self._queue.put_nowait(job)

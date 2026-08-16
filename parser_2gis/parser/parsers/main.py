@@ -461,10 +461,24 @@ class MainParser:
             walk_page_number = None
 
         # Кэш уже собранных фирм (межзадачный дедуп, опция skip_seen_firms).
+        # В БД-режиме свежесть определяется по TTL кэша запросов (а не «видел когда-либо»).
         skip_seen_firms: set[str] = set()
         if self._options.skip_seen_firms:
-            skip_seen_firms = self._load_seen_firms()
-            logger.info('[parser] загружен кэш seen_firms: %d фирм', len(skip_seen_firms))
+            if self._options.storage == 'db':
+                try:
+                    from datetime import datetime, timedelta, timezone
+                    from ...db.connection import default_ttl_hours
+                    from ...db.store import load_seen_firm_ids
+                    ttl = self._options.cache_ttl_hours or default_ttl_hours()
+                    cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl)
+                    skip_seen_firms = load_seen_firm_ids(cutoff)
+                    logger.info('[parser] кэш seen_firms из БД: %d фирм (свежие < %d ч)',
+                                len(skip_seen_firms), ttl)
+                except Exception:  # noqa: BLE001
+                    skip_seen_firms = set()
+            else:
+                skip_seen_firms = self._load_seen_firms()
+                logger.info('[parser] загружен кэш seen_firms: %d фирм', len(skip_seen_firms))
 
         # Go URL
         self._chrome_remote.navigate(url, referer='https://google.com', timeout=120)
@@ -660,7 +674,8 @@ class MainParser:
                     return
 
     def close(self) -> None:
-        if self._options.skip_seen_firms and self._new_seen:
+        if self._options.skip_seen_firms and self._new_seen \
+                and self._options.storage != 'db':
             self._save_seen_firms(self._new_seen)
         self._chrome_remote.stop()
 

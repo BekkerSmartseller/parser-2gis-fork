@@ -107,6 +107,9 @@ if __name__ == '__main__':
             'xlsxwriter>=3.0.5',
             'litestar>=2,<3',
             'uvicorn>=0.30',
+            'psycopg[binary]>=3.1',
+            'psycopg-pool>=3.2',
+            'croniter>=2.0',
         ],
         extras_require={
             'dev': [

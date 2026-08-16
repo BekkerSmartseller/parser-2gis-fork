@@ -132,6 +132,11 @@ def parse_arguments() -> tuple[argparse.Namespace, Configuration]:
     p_parser.add_argument('--parser.collect-branches', metavar='{yes,no}', help='Собирать все филиалы сетей (страница /branches/)')
     p_parser.add_argument('--parser.skip-seen-firms', metavar='{yes,no}', help='Пропускать организации, уже собранные в прошлых задачах (кэш seen_firms)')
 
+    db_parser = arg_parser.add_argument_group('Аргументы БД (TimescaleDB)')
+    db_parser.add_argument('--storage', metavar='{files,db}', default=None, help='Хранилище результатов: files (по умолчанию) или db (требуется P2GIS_DB_URL; кэш запросов, планировщик, синк в medexpertai)')
+    db_parser.add_argument('--parser.cache-ttl-hours', metavar='{24,168,...}', help='TTL кэша запросов в часах (БД-режим, по умолчанию 168 = 7 дней)')
+    db_parser.add_argument('--parser.sync-after', metavar='{yes,no}', help='Синхронизировать p2gis -> medexpertai после задачи (БД-режим)')
+
     other_parser = arg_parser.add_argument_group('Прочие аргументы')
     other_parser.add_argument('--writer.verbose', metavar='{yes,no}', help='Отображать наименования позиций во время парсинга')
     other_parser.add_argument('--writer.encoding', metavar='{utf8,1251,...}', help='Кодировка результирующего файла')
@@ -171,6 +176,13 @@ def main() -> None:
 
     # Full CLI args present -> run headless CLI; otherwise launch the web dashboard.
     if args.url is not None and args.output_path is not None and args.format is not None:
+        # Хранилище по умолчанию: db, если задан P2GIS_DB_URL (иначе files).
+        if getattr(args, 'storage', None) is None:
+            try:
+                from .db import enabled
+                command_line_config.parser.storage = 'db' if enabled() else 'files'
+            except Exception:  # noqa: BLE001
+                command_line_config.parser.storage = 'files'
         cli_app(args.url, args.output_path, args.format, command_line_config)
         return
 
