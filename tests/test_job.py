@@ -63,10 +63,10 @@ def test_jobs_update_status_sql_placeholders(monkeypatch):
 
     db_jobs.update_status('job1', 'done', None, finished=True)
     assert captured['sql'].count('%s') == 3
-    assert captured['params'] == ['job1', None, 'job1']
+    assert captured['params'] == ['done', None, 'job1']
     assert ', finished_at=now()' in captured['sql']
 
     db_jobs.update_status('job1', 'running', None, finished=False)
     assert captured['sql'].count('%s') == 3
-    assert captured['params'] == ['job1', None, 'job1']
+    assert captured['params'] == ['running', None, 'job1']
     assert ', finished_at=now()' not in captured['sql']
