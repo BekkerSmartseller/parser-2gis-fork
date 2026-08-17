@@ -62,10 +62,11 @@ def update_status(job_id: str, status: str, error: Optional[str] = None,
     """Пишет статус задачи (и, при finished=True, finished_at)."""
     try:
         with connection() as conn:
+            finish_sql = ", finished_at=now()" if finished else ""
             conn.execute(
                 "UPDATE p2gis.jobs SET status=%s, error=%s, updated_at=now(), "
-                "last_heartbeat=now()%s WHERE id=%s",
-                [status, error, ", finished_at=now()" if finished else "", job_id])
+                "last_heartbeat=now()" + finish_sql + " WHERE id=%s",
+                [status, error, job_id])
     except Exception as e:  # noqa: BLE001
         logger.warning('[jobs] update_status(%s): %s', job_id, e)
 
