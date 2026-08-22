@@ -7,4 +7,4 @@ dist/
 .pytest_cache/
 build/
 .tox/
-.mypy_cache/
+.mypy_cache/.market_api_key
